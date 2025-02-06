@@ -46,7 +46,7 @@ defaults:
 jobs:
   test:
     name: vLLM Ascend test (self-host)
-    if: ${{ (github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'pull_request' && contains(github.event.comment.body, '/recheck'))) }}
+    if: ${{ (github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/recheck'))) }}
     runs-on: ubuntu-latest  # actionlint-ignore: runner-label
 
     steps:
@@ -55,3 +55,14 @@ jobs:
           sed -i 's|ports.ubuntu.com|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
           pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 
+      - name: Set GitHub status check
+        if: ${{ (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/recheck')) }}
+        uses: octokit/request-action@v2
+        with:
+          route: POST /repos/{owner}/{repo}/statuses/{sha}
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.repository }}
+          sha: ${{ github.sha }}
+          state: ${{ steps.config_mirrors.outcome == 'success' && 'success' || 'failure' }}
+          description: ${{ steps.config_mirrors.outcome == 'success' && 'Tests passed' || 'Tests failed' }}
+          context: "ci/recheck-tests"
