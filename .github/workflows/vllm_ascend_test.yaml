@@ -44,7 +44,7 @@ jobs:
   test:
     name: vLLM Ascend test (self-host)
     if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || (github.event.issue.pull_request && contains(github.event.comment.body, 'recheck e2e')) }}
-    runs-on: ascend-arm64  # actionlint-ignore: runner-label
+    runs-on: ubuntu-latest  # actionlint-ignore: runner-label
 
     # container:
     #   image: quay.io/ascend/cann:8.0.rc3.beta1-910b-ubuntu22.04-py3.10
