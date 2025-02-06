@@ -54,14 +54,20 @@ jobs:
         run: |
           pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 
-      - name: Set GitHub status check
-        if: ${{ (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/recheck')) }}
-        uses: octokit/request-action@v1
+      - name: Set GitHub status check using GitHub Script
+        uses: actions/github-script@v6
         with:
-          route: POST /repos/{owner}/{repo}/statuses/{sha}
-          owner: ${{ github.repository_owner }}
-          repo: ${{ github.repository }}
-          sha: ${{ github.sha }}
-          state: ${{ steps.config_mirrors.outcome == 'success' && 'success' || 'failure' }}
-          description: ${{ steps.config_mirrors.outcome == 'success' && 'Tests passed' || 'Tests failed' }}
-          context: "ci/recheck-tests"
+          script: |
+            const sha = '${{ github.sha }}';
+            const state = '${{ steps.config_mirrors.outcome == 'success' ? 'success' : 'failure' }}';
+            const description = '${{ steps.config_mirrors.outcome == 'success' ? 'Tests passed' : 'Tests failed' }}';
+            const context = 'ci/recheck-tests';
+
+            await github.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha,
+              state,
+              description,
+              context,
+            });
