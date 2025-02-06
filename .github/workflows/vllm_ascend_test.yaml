@@ -54,8 +54,8 @@ jobs:
 
       - name: Create an empty commit to trigger CI
         run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
+          git config --global user.name "Mengqing Cao"
+          git config --global user.email "cmq0113@163.com"
 
           git commit --allow-empty -m "Trigger CI via comment"
 
