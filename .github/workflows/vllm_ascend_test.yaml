@@ -68,9 +68,10 @@ jobs:
         working-directory: vllm
         run: |
           mv vllm /home/runner/work/vllm
+        working-directory: /home/runner/work/
 
       - name: Install vllm-project/vllm from source
-        working-directory: ../vllm
+        working-directory: vllm
         run: |
           VLLM_TARGET_DEVICE=empty pip install -e .
 
