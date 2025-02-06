@@ -51,11 +51,6 @@ jobs:
       - name: Checkout vllm-project/vllm-ascend repo
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          apt-get update -y
-          apt-get -y install `cat packages.txt`
-
       - name: Check current directory
         run: |
           echo "Current directory:"
