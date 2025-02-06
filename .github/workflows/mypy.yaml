@@ -39,6 +39,8 @@ on:
      - '**/*.py'
      - '.github/workflows/mypy.yaml'
      - 'tools/mypy.sh'
+  issue_comment:
+    types: [created]
 
 jobs:
   mypy:
@@ -60,10 +62,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: vllm-project/vllm
-        path: vllm-empty
+        path: vllm
 
     - name: Install vllm-project/vllm from source
-      working-directory: vllm-empty
+      working-directory: vllm
       run: |
         pip install -r requirements-build.txt --extra-index-url https://download.pytorch.org/whl/cpu
         VLLM_TARGET_DEVICE=empty pip install .

@@ -87,10 +87,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: vllm-project/vllm
-          path: ./vllm-empty
+          path: ./vllm
 
       - name: Install vllm-project/vllm from source
-        working-directory: ./vllm-empty
+        working-directory: ./vllm
         run: |
           VLLM_TARGET_DEVICE=empty pip install -e .
 
