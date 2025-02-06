@@ -65,7 +65,6 @@ jobs:
           path: vllm
 
       - name: move vllm
-        working-directory: vllm
         run: |
           mv vllm /home/runner/work/vllm
         working-directory: /home/runner/work/
