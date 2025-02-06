@@ -54,20 +54,3 @@ jobs:
         run: |
           pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 
-      - name: Set GitHub status check using GitHub Script
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const sha = '${{ github.sha }}';
-            const state = '${{ steps.config_mirrors.outcome == 'success' ? 'success' : 'failure' }}';
-            const description = '${{ steps.config_mirrors.outcome == 'success' ? 'Tests passed' : 'Tests failed' }}';
-            const context = 'ci/recheck-tests';
-
-            await github.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha,
-              state,
-              description,
-              context,
-            });
