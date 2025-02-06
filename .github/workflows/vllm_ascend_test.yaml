@@ -43,6 +43,7 @@ defaults:
 jobs:
   test:
     name: vLLM Ascend test (self-host)
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && contains(github.event.comment.body, 'recheck_pr_test')) }}
     runs-on: ascend-arm64  # actionlint-ignore: runner-label
 
     container:
@@ -103,4 +104,4 @@ jobs:
 
       - name: Run vllm-project/vllm test
         run: |
-          bash tools/npu-vllm-test.sh
+          pytest -sv
