@@ -32,6 +32,7 @@ on:
       - '*.txt'
       - '**/*.py'
       - '.github/workflows/vllm_ascend_test.yaml'
+
   issue_comment:
     types: [created]
 
