@@ -56,7 +56,7 @@ jobs:
 
       - name: Set GitHub status check
         if: ${{ (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/recheck')) }}
-        uses: octokit/request-action@v2
+        uses: octokit/request-action@v1
         with:
           route: POST /repos/{owner}/{repo}/statuses/{sha}
           owner: ${{ github.repository_owner }}
