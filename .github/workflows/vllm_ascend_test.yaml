@@ -62,7 +62,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: vllm-project/vllm
-          path: ../vllm
+          path: vllm
+
+      - name: move vllm
+        working-directory: vllm
+        run: |
+          mv vllm /home/runner/work/vllm
 
       - name: Install vllm-project/vllm from source
         working-directory: ../vllm
