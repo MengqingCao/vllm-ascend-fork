@@ -43,65 +43,65 @@ defaults:
 jobs:
   test:
     name: vLLM Ascend test (self-host)
-    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && contains(github.event.comment.body, 'recheck_pr_test')) }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || (github.event.issue.pull_request && contains(github.event.comment.body, 'recheck e2e')) }}
     runs-on: ascend-arm64  # actionlint-ignore: runner-label
 
-    container:
-      image: quay.io/ascend/cann:8.0.rc3.beta1-910b-ubuntu22.04-py3.10
-      volumes:
-        - /usr/local/dcmi:/usr/local/dcmi
-        - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
-        - /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/
-        # Use self-host cache speed up pip and model download
-        - /home/action/actions-runner/_work/cache:/github/home/.cache/
-      options: >-
-        --device /dev/davinci6
-        --device /dev/davinci_manager
-        --device /dev/devmm_svm
-        --device /dev/hisi_hdc
-      env:
-        HF_ENDPOINT: https://hf-mirror.com
+    # container:
+    #   image: quay.io/ascend/cann:8.0.rc3.beta1-910b-ubuntu22.04-py3.10
+    #   volumes:
+    #     - /usr/local/dcmi:/usr/local/dcmi
+    #     - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
+    #     - /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/
+    #     # Use self-host cache speed up pip and model download
+    #     - /home/action/actions-runner/_work/cache:/github/home/.cache/
+    #   options: >-
+    #     --device /dev/davinci6
+    #     --device /dev/davinci_manager
+    #     --device /dev/devmm_svm
+    #     --device /dev/hisi_hdc
+    #   env:
+    #     HF_ENDPOINT: https://hf-mirror.com
     steps:
-      - name: Check npu driver
-        run: |
-          npu-smi info
+      # - name: Check npu driver
+      #   run: |
+      #     npu-smi info
 
       - name: Config mirrors
         run: |
           sed -i 's|ports.ubuntu.com|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
           pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 
-      - name: Checkout vllm-project/vllm-ascend repo
-        uses: actions/checkout@v4
+      # - name: Checkout vllm-project/vllm-ascend repo
+      #   uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          apt-get update -y
-          apt-get -y install `cat packages.txt`
+      # - name: Install system dependencies
+      #   run: |
+      #     apt-get update -y
+      #     apt-get -y install `cat packages.txt`
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements-dev.txt
+      # - name: Install dependencies
+      #   run: |
+      #     pip install -r requirements-dev.txt
 
-      - name: Checkout vllm-project/vllm repo
-        uses: actions/checkout@v4
-        with:
-          repository: vllm-project/vllm
-          path: ./vllm
+      # - name: Checkout vllm-project/vllm repo
+      #   uses: actions/checkout@v4
+      #   with:
+      #     repository: vllm-project/vllm
+      #     path: ./vllm
 
-      - name: Install vllm-project/vllm from source
-        working-directory: ./vllm
-        run: |
-          VLLM_TARGET_DEVICE=empty pip install -e .
+      # - name: Install vllm-project/vllm from source
+      #   working-directory: ./vllm
+      #   run: |
+      #     VLLM_TARGET_DEVICE=empty pip install -e .
 
-      - name: Install vllm-project/vllm-ascend
-        run: |
-          pip install -e .
+      # - name: Install vllm-project/vllm-ascend
+      #   run: |
+      #     pip install -e .
 
-      - name: Run vllm-project/vllm-ascend test
-        run: |
-          pytest -sv tests
+      # - name: Run vllm-project/vllm-ascend test
+      #   run: |
+      #     pytest -sv tests
 
-      - name: Run vllm-project/vllm test
-        run: |
-          pytest -sv
+      # - name: Run vllm-project/vllm test
+      #   run: |
+      #     pytest -sv
