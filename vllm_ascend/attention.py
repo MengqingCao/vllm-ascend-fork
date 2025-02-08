@@ -522,7 +522,6 @@ class AscendAttentionBackendImpl(AttentionImpl):
                     attn_metadata.max_prefill_seq_len, self.sliding_window,
                     num_tokens)
                 attn_metadata.attn_mask = attention_mask
-
             if (self.alibi_slopes is not None
                     and attn_metadata.pse_shift is None):
                 attn_metadata.pse_shift = _make_alibi_bias(
@@ -537,31 +536,41 @@ class AscendAttentionBackendImpl(AttentionImpl):
                     or attn_metadata.block_tables.numel() == 0):
                 max_seq_len = attn_metadata.max_prefill_seq_len
 
-                # shape of q/k/v [B,S*H] --> [B,S,N,D]
-                query = query.view(-1, max_seq_len, self.num_heads,
-                                   self.head_size).transpose(1, 2)
-                key = key.view(-1, max_seq_len, self.num_kv_heads,
-                               self.head_size).transpose(1, 2)
-                value = value.view(-1, max_seq_len, self.num_kv_heads,
-                                   self.head_size).transpose(1, 2)
-                # FA for prefill phase
-                output = torch_npu.npu_prompt_flash_attention(
-                    query,
-                    key,
-                    value,
-                    pse_shift=attn_metadata.pse_shift,
-                    atten_mask=attn_metadata.attn_mask,
-                    num_heads=self.num_heads,
-                    scale_value=1 / math.sqrt(self.head_size),
-                    input_layout="BNSD",
-                    num_key_value_heads=self.num_kv_heads,
-                    pre_tokens=65535,
-                    next_tokens=0,
-                    sparse_mode=attn_metadata.sparse_mode,
-                )
+                start = 0
+                query = query.view(-1, self.num_heads * self.head_size)
+                key = key.view(-1, self.num_kv_heads * self.head_size)
+                value = value.view(-1, self.num_kv_heads * self.head_size)
+                output = torch.empty_like(query)
+                for seq_len in attn_metadata.seq_lens:
+                    end = start + seq_len
+                    # shape of q/k/v [B,S*H] --> [B,S,N,D]
+                    query_cpy = query[start:end, :].view(-1, seq_len, self.num_heads,
+                                    self.head_size).transpose(1, 2)
+                    key_cpy = key[start:end, :].view(-1, seq_len, self.num_kv_heads,
+                                self.head_size).transpose(1, 2)
+                    value_cpy = value[start:end, :].view(-1, seq_len, self.num_kv_heads,
+                                    self.head_size).transpose(1, 2)
+                    # FA for prefill phase
+                    sub_output = torch_npu.npu_prompt_flash_attention(
+                        query_cpy,
+                        key_cpy,
+                        value_cpy,
+                        pse_shift=attn_metadata.pse_shift,
+                        atten_mask=attn_metadata.attn_mask,
+                        num_heads=self.num_heads,
+                        scale_value=1 / math.sqrt(self.head_size),
+                        input_layout="BNSD",
+                        num_key_value_heads=self.num_kv_heads,
+                        pre_tokens=65535,
+                        next_tokens=0,
+                        sparse_mode=attn_metadata.sparse_mode,
+                    )
+                    output[start:end, :] = sub_output.transpose(1, 2).reshape(
+                        seq_len, self.num_heads * self.head_size)
+                    start = end
+
                 # reshape to [B,H]
-                output = output.transpose(1, 2).reshape(
-                    num_tokens, self.num_heads * self.head_size)
+                # output = output
             else:
                 # prefix-enabled attention
                 assert attn_type == AttentionType.DECODER, (
@@ -603,18 +612,28 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 1,
                 self.head_size * self.num_heads,
             )
-            output = torch_npu.npu_incre_flash_attention(
-                query,
-                key_cache,
-                value_cache,
-                num_heads=self.num_heads,
-                num_key_value_heads=self.num_kv_heads,
-                scale_value=self.scale,
-                input_layout="BSH",
-                block_table=attn_metadata.block_tables,
-                block_size=key_cache.shape[1],  # max val of block_size == 512
-                actual_seq_lengths=attn_metadata.seq_lens,
-            )
+            output = torch.zeros_like(query)
+            start = 0
+            for seq_len in attn_metadata.seq_lens:
+                end = start + seq_len
+                query = query[start:end, :, :]
+                key_cache = key_cache[start:end, :]
+                value_cache = value_cache[start:end, :, :]
+                # FA for prefill phase
+                sub_output = torch_npu.npu_incre_flash_attention(
+                    query,
+                    key_cache,
+                    value_cache,
+                    num_heads=self.num_heads,
+                    num_key_value_heads=self.num_kv_heads,
+                    scale_value=self.scale,
+                    input_layout="BSH",
+                    block_table=attn_metadata.block_tables,
+                    block_size=key_cache.shape[1],  # max val of block_size == 512
+                    actual_seq_lengths=attn_metadata.seq_lens,
+                )
+                output[start:end, :, :] = sub_output
+                start = end
 
             # [B,S,H] --> [B,H]
             output = output.squeeze(1)
