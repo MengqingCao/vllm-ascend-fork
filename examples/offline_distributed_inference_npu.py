@@ -17,7 +17,21 @@
 # limitations under the License.
 #
 
+import gc  # noqa
+
+import torch
+import torch_npu  # noqa: F401
 from vllm import LLM, SamplingParams
+from vllm.distributed.parallel_state import (destroy_distributed_environment,
+                                             destroy_model_parallel)
+
+
+def clean_up():
+    destroy_model_parallel()
+    destroy_distributed_environment()
+    gc.collect()
+    torch.npu.empty_cache()
+
 
 prompts = [
     "Hello, my name is",
@@ -30,7 +44,7 @@ prompts = [
 sampling_params = SamplingParams(max_tokens=100, temperature=0.0)
 # Create an LLM.
 llm = LLM(
-    model="Qwen/Qwen2.5-0.5B-Instruct",
+    model="/home/cmq/cache/modelscope/models/Qwen/Qwen2.5-0.5B-Instruct",
     tensor_parallel_size=2,
     distributed_executor_backend="mp",
     trust_remote_code=True,
@@ -42,3 +56,6 @@ for output in outputs:
     prompt = output.prompt
     generated_text = output.outputs[0].text
     print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
+
+del llm
+clean_up()

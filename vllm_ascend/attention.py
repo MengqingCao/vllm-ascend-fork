@@ -34,7 +34,12 @@ from vllm.attention.backends.utils import (CommonAttentionState,
                                            CommonMetadataBuilder,
                                            compute_slot_mapping,
                                            compute_slot_mapping_start_idx,
-                                           is_block_tables_empty)
+                                           is_all_cross_attn_metadata_set,
+                                           is_all_encoder_attn_metadata_set,
+                                           is_block_tables_empty,
+                                           get_num_prefill_decode_query_kv_tokens,
+                                           get_seq_len_block_table_args
+                                           )
 from vllm.utils import async_tensor_h2d, make_tensor_with_pad
 
 if TYPE_CHECKING:
@@ -217,6 +222,9 @@ class AscendMetadata(AttentionMetadata):
     # Maximum query length in the batch. None for decoding.
     max_query_len: Optional[int] = None
 
+    # Max number of query tokens among request in the batch.
+    max_decode_query_len: Optional[int] = None
+
     # Self-attention prefill/decode metadata cache
     _cached_prefill_metadata: Optional["AscendMetadata"] = None
     _cached_decode_metadata: Optional["AscendMetadata"] = None
@@ -239,6 +247,22 @@ class AscendMetadata(AttentionMetadata):
     # and block tables
     cross_slot_mapping: Optional[torch.Tensor] = None
     cross_block_tables: Optional[torch.Tensor] = None
+
+    @property
+    def is_all_encoder_attn_metadata_set(self):
+        '''
+        All attention metadata required for encoder attention is set.
+        '''
+        return is_all_encoder_attn_metadata_set(self)
+
+    @property
+    def is_all_cross_attn_metadata_set(self):
+        '''
+        All attention metadata required for enc/dec cross-attention is set.
+
+        Superset of encoder attention required metadata.
+        '''
+        return is_all_cross_attn_metadata_set(self)
 
     @property
     def prefill_metadata(self) -> Optional["AscendMetadata"]:
@@ -327,6 +351,40 @@ class AscendMetadata(AttentionMetadata):
             cross_block_tables=self.cross_block_tables,
             enable_kv_scales_calculation=False)
         return self._cached_decode_metadata
+
+    def get_seq_lens(
+        self,
+        attn_type: str,
+    ):
+        '''
+        Extract appropriate sequence lengths from attention metadata
+        according to attention type.
+
+        Arguments:
+
+        * attn_metadata: Attention metadata structure associated with attention
+        * attn_type: encoder attention, decoder self-attention,
+                    encoder/decoder cross-attention
+
+        Returns:
+        * Appropriate sequence lengths tensor for query
+        * Appropriate sequence lengths tensor for key & value
+        '''
+
+        if (attn_type == AttentionType.DECODER
+                or attn_type == AttentionType.ENCODER_ONLY):
+            seq_lens_q = self.seq_lens
+            seq_lens_kv = self.seq_lens
+        elif attn_type == AttentionType.ENCODER:
+            seq_lens_q = self.encoder_seq_lens
+            seq_lens_kv = self.encoder_seq_lens
+        elif attn_type == AttentionType.ENCODER_DECODER:
+            seq_lens_q = self.seq_lens
+            seq_lens_kv = self.encoder_seq_lens
+        else:
+            raise AttributeError(f"Invalid attention type {str(attn_type)}")
+
+        return seq_lens_q, seq_lens_kv
 
 
 class AscendMetadataBuilder(CommonMetadataBuilder[AscendMetadata]):
@@ -459,9 +517,8 @@ class AscendMetadataBuilder(CommonMetadataBuilder[AscendMetadata]):
             self.multimodal_placeholder_maps.items()
         }
 
-        seq_lens_tensor = torch.tensor(seq_lens,
-                                       dtype=torch.long,
-                                       device=device)
+        seq_lens_tensor = async_tensor_h2d(seq_lens, torch.int32, device,
+                                           self.runner.pin_memory)
 
         return AscendMetadata(
             num_prefills=self.num_prefills,
@@ -541,19 +598,56 @@ class AscendAttentionBackendImpl(AttentionImpl):
             shape = [batch_size, seq_len * num_heads * head_size]
         """
         assert layer._k_scale_float == 1.0 and layer._v_scale_float == 1.0
+        attn_type = self.attn_type
+
+        if (attn_type == AttentionType.ENCODER
+                and (not attn_metadata.is_all_encoder_attn_metadata_set)):
+            raise AttributeError("Encoder attention requires setting "
+                                 "encoder metadata attributes.")
+        elif (attn_type == AttentionType.ENCODER_DECODER
+              and (not attn_metadata.is_all_cross_attn_metadata_set)):
+            raise AttributeError("Encoder/decoder cross-attention "
+                                 "requires setting cross-attention "
+                                 "metadata attributes.")
         # View q k v to BSH.
         num_tokens = query.shape[0]
         query = query.view(-1, self.num_heads, self.head_size)
-        key = key.view(-1, self.num_kv_heads, self.head_size)
-        value = value.view(-1, self.num_kv_heads, self.head_size)
-        # TODO: Remove this contiguous in the future.
-        value = value.contiguous()
-
+        if key is not None:
+            assert value is not None
+            key = key.view(-1, self.num_kv_heads, self.head_size)
+            value = value.view(-1, self.num_kv_heads, self.head_size)
+            # TODO: Remove this contiguous in the future.
+            value = value.contiguous()
+        else:
+            assert value is None
         output = torch.empty(num_tokens,
                              self.num_heads,
                              self.head_size,
                              dtype=query.dtype,
                              device=query.device)
+
+
+        (num_prefill_query_tokens, num_prefill_kv_tokens,
+        num_decode_query_tokens) = \
+            get_num_prefill_decode_query_kv_tokens(attn_metadata, attn_type)
+
+        output = torch.empty_like(query, device=query.device)
+
+        # Query for decode. KV is not needed because it is already cached.
+        decode_query = query[num_prefill_query_tokens:]
+        decode_out = torch.empty_like(decode_query, device=decode_query.device)
+
+        # QKV for prefill.
+        prefill_query = query[:num_prefill_query_tokens]
+        prefill_out = torch.empty_like(prefill_query, device=prefill_query.device)
+        if key is not None and value is not None:
+            key = key[:num_prefill_kv_tokens]
+            value = value[:num_prefill_kv_tokens]
+
+        assert query.shape[0] == num_prefill_query_tokens
+        assert decode_query.shape[0] == num_decode_query_tokens
+
+        torch.testing.assert_close(prefill_query, query)
 
         if hasattr(layer, 'quant_method'):
             isPrefill = True if attn_metadata.num_prefills > 0 else False
@@ -577,40 +671,73 @@ class AscendAttentionBackendImpl(AttentionImpl):
         else:
             if kv_cache.numel() > 0:
                 key_cache, value_cache = kv_cache[0], kv_cache[1]
+                # Reshape the input keys and values and store them in the cache.
+                # If kv_cache is not provided, the new key and value tensors are
+                # not cached. This happens during the initial memory
+                # profiling run.
                 num_blocks, block_size, _ = key_cache.shape
                 key_cache = key_cache.view(num_blocks, block_size,
-                                           self.num_kv_heads, self.head_size)
+                                            self.num_kv_heads,
+                                            self.head_size)
                 value_cache = value_cache.view(num_blocks, block_size,
-                                               self.num_kv_heads,
-                                               self.head_size)
-                slots = attn_metadata.slot_mapping
-                torch_npu._npu_reshape_and_cache(key=key,
-                                                 value=value,
-                                                 key_cache=key_cache,
-                                                 value_cache=value_cache,
-                                                 slot_indices=slots)
+                                                self.num_kv_heads,
+                                                self.head_size)
+                updated_slot_mapping = attn_metadata.slot_mapping
+
+                # We skip updating the KV cache under two conditions:
+                #  a. When the Attention Type is ENCODER. In this phase, we compute
+                #     only the encoder attention without updating the cache.
+                #  b. When both Key and Value are None. This occurs during
+                #     cross-attention computation in the decoding phase, where the
+                #     KV cache is already populated with the cross-attention
+                #     tensor. Thus, we skip cache updates during this time.
+                if (attn_type != AttentionType.ENCODER) and (
+                        key is not None) and (value is not None):
+                    if attn_type == AttentionType.ENCODER_DECODER:
+                        # Update cross-attention KV cache (prefill-only)
+                        updated_slot_mapping = attn_metadata.cross_slot_mapping
+
+                    torch_npu._npu_reshape_and_cache(
+                        key=key,
+                        value=value,
+                        key_cache=key_cache,
+                        value_cache=value_cache,
+                        slot_indices=updated_slot_mapping)
 
             if attn_metadata.num_prefills > 0:
 
                 if (attn_metadata.block_tables is None
                         or attn_metadata.block_tables.numel() == 0):
+
+                    q_seq_len, kv_seq_len = attn_metadata.get_seq_lens(attn_type)
                     assert attn_metadata.attn_mask is not None
                     mask = attn_metadata.attn_mask
                     assert attn_metadata.prefill_metadata is not None
+                    print(100*"^")
+                    print(q_seq_len, "\n", kv_seq_len, "\n", attn_metadata.prefill_metadata.seq_lens)
+
                     self.seq_lens_tensor_cpu = torch.from_numpy(
                         np.array(
                             attn_metadata.prefill_metadata.seq_lens).astype(
                                 np.int32))
-                    torch_npu._npu_flash_attention(
+
+                    torch_npu._npu_flash_attention_unpad(
                         query=query,
                         key=key,
                         value=value,
-                        mask=mask,
                         seq_len=self.seq_lens_tensor_cpu,
                         scale_value=self.scale,
                         num_heads=self.num_heads,
                         num_kv_heads=self.num_kv_heads,
                         out=output)
+                    torch.save(query, "/home/cmq/code/vllm-ascend/data_dump/query.pt")
+                    torch.save(key, "/home/cmq/code/vllm-ascend/data_dump/key.pt")
+                    torch.save(value, "/home/cmq/code/vllm-ascend/data_dump/value.pt")
+                    torch.save(self.seq_lens_tensor_cpu, "/home/cmq/code/vllm-ascend/data_dump/seq_lens.pt")
+                    torch.save(output, "/home/cmq/code/vllm-ascend/data_dump/out.pt")
+                    print(100*"%")
+                    print(f"num_heads: {self.num_heads}\tnum_kv_heads: {self.num_kv_heads}")
+
                 else:
                     # TODO: Will support prefix cache and chunked prefill soon.
                     raise RuntimeError(
@@ -618,12 +745,26 @@ class AscendAttentionBackendImpl(AttentionImpl):
                     )
             elif attn_metadata.decode_metadata:
                 assert kv_cache is not None
+                assert attn_type != AttentionType.ENCODER_ONLY, (
+                    "Encoder-only models should not have decode metadata.")
+
+                seq_len1, seq_len2 = attn_metadata.get_seq_lens(attn_type)
+                print(100*"*")
+                print(seq_len1, seq_len2)
+                print(attn_metadata.decode_metadata.seq_lens)
                 self.seq_lens_tensor_cpu = torch.from_numpy(
-                    np.array(attn_metadata.decode_metadata.seq_lens).astype(
+                    np.array(seq_len1).astype(
                         np.int32))
+                    
+                (
+                    seq_lens_arg,
+                    max_seq_len_arg,
+                    block_tables_arg,
+                ) = attn_metadata.decode_metadata.get_seq_len_block_table_args(attn_type)
+
                 block_tables = attn_metadata.decode_metadata.block_tables
                 torch_npu._npu_paged_attention(
-                    query=query,
+                    query=decode_query,
                     key_cache=key_cache,
                     value_cache=value_cache,
                     num_kv_heads=self.num_kv_heads,
@@ -631,7 +772,12 @@ class AscendAttentionBackendImpl(AttentionImpl):
                     scale_value=self.scale,
                     block_table=block_tables,
                     context_lens=self.seq_lens_tensor_cpu,
-                    out=output)
+                    out=decode_out)
+                output[num_prefill_query_tokens:] = decode_out
+
+        # print(100*"$")
+        # print(output)
+        # print(100*"$")
 
         return output.view(num_tokens, self.hidden_size)
 
