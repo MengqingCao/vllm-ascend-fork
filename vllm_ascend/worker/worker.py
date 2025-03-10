@@ -38,14 +38,14 @@ from vllm.sequence import (ExecuteModelRequest, IntermediateTensors,
                            SequenceGroupMetadata, SequenceGroupMetadataDelta)
 from vllm.utils import bind_kv_cache
 from vllm.worker.cache_engine import CacheEngine
-from vllm.worker.enc_dec_model_runner import EncoderDecoderModelRunner
 from vllm.worker.model_runner_base import ModelRunnerBase
 from vllm.worker.worker_base import (LocalOrDistributedWorkerBase, WorkerBase,
                                      WorkerInput)
 
 from vllm_ascend.platform import NPUPlatform
+from vllm_ascend.enc_dec_model_runner import NPUEncoderDecoderModelRunner
 from vllm_ascend.utils import try_register_lib
-from vllm_ascend.worker.model_runner import NPUModelRunner
+from vllm_ascend.worker.model_runner import NPUModelRunner, NPUModelRunnerBase
 from vllm_ascend.worker.pooling_model_runner import NPUPoolingModelRunner
 
 logger = init_logger(__name__)
@@ -63,7 +63,9 @@ class NPUWorker(LocalOrDistributedWorkerBase):
                  local_rank: int,
                  rank: int,
                  distributed_init_method: str,
-                 is_driver_worker: bool = False):
+                 is_driver_worker: bool = False,
+                 model_runner_cls: Optional[Type[NPUModelRunnerBase]] = None,
+                 ) -> None:
         # Register ops when worker init.
         from vllm_ascend import ops  # noqa: F401
 
@@ -100,13 +102,15 @@ class NPUWorker(LocalOrDistributedWorkerBase):
         if model_config.runner_type == "pooling":
             ModelRunnerClass = NPUPoolingModelRunner
         elif self.model_config.is_encoder_decoder:
-            ModelRunnerClass = EncoderDecoderModelRunner
+            ModelRunnerClass = NPUEncoderDecoderModelRunner
         self.model_runner: ModelRunnerBase = ModelRunnerClass(
             vllm_config=self.vllm_config,
             kv_cache_dtype=self.cache_config.cache_dtype,
             is_driver_worker=is_driver_worker,
             **speculative_args,
         )
+        if model_runner_cls is not None:
+            self.model_runner = model_runner_cls(self.model_runner)
 
         # Uninitialized cache engine. Will be initialized by
         # initialize_cache.

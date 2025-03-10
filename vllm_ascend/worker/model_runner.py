@@ -819,6 +819,9 @@ class NPUModelRunnerBase(ModelRunnerBase[TModelInputForNPU]):
         logger.info("Loading model weights took %.4f GB",
                     self.model_memory_usage / float(2**30))
 
+    def get_model(self) -> nn.Module:
+        return self.model
+
     def save_sharded_state(
         self,
         path: str,
