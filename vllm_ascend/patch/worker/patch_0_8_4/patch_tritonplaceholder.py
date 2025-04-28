@@ -17,6 +17,7 @@
 # Adapted from vllm/triton_utils/importing.py
 #
 
+import importlib
 import sys
 import types
 from importlib.util import find_spec
@@ -36,6 +37,8 @@ if not HAS_TRITON:
 
         def __init__(self):
             super().__init__("triton")
+            self.__spec__ = importlib.machinery.ModuleSpec(
+                name="triton", loader=None, origin="placeholder")
             self.jit = self._dummy_decorator("jit")
             self.autotune = self._dummy_decorator("autotune")
             self.heuristics = self._dummy_decorator("heuristics")
