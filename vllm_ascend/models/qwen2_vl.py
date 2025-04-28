@@ -19,7 +19,7 @@
 
 from collections.abc import Iterable
 from functools import partial
-from typing import Callable, Optional, Set, Type, Tuple
+from typing import Callable, Optional, Set, Tuple, Type
 
 import torch
 import torch.nn as nn
@@ -143,11 +143,15 @@ class AscendQwen2VisionBlock(Qwen2VisionBlock):
         sin: torch.Tensor,
     ) -> torch.Tensor:
         x = x + self.attn(
-            self.norm1(x), cu_seqlens=cu_seqlens, cos=cos, sin=sin,
+            self.norm1(x),
+            cu_seqlens=cu_seqlens,
+            cos=cos,
+            sin=sin,
         )
 
         x = x + self.mlp(self.norm2(x))
         return x
+
 
 class AscendQwen2VisionPatchEmbed(Qwen2VisionPatchEmbed):
 
