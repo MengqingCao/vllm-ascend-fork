@@ -31,6 +31,15 @@ docker run --rm \
 -it $IMAGE bash
 ```
 
+```{note}
+1. vLLM and vLLM Ascend code are placed in `/vllm-workspace` in the docker image. And they are installed in develop mode so that the developer could easily modify the code.
+
+2. The entrypath of the docker container is `/workspace`.
+
+3. **Optional**: Install MindIE Turbo for Performance acceleration: `pip install mindie_turbo==|pip_vllm_ascend_version|`
+
+```
+
 ## Usage
 
 You can use Modelscope mirror to speed up download:

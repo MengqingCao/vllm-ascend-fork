@@ -81,20 +81,19 @@ source vllm-ascend-env/bin/activate
 pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple attrs 'numpy<2.0.0' decorator sympy cffi pyyaml pathlib2 psutil protobuf scipy requests absl-py wheel typing_extensions
 
 # Download and install the CANN package.
-wget https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/Milan-ASL/Milan-ASL%20V100R001C21B800TP051/Ascend-cann-toolkit_8.1.RC1.alpha002_linux-aarch64.run
-chmod +x ./Ascend-cann-toolkit_8.0.0_linux-aarch64.run
-./Ascend-cann-toolkit_8.0.0_linux-aarch64.run --full
+wget https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%208.1.RC1/Ascend-cann-toolkit_8.1.RC1_linux-"$(uname -i)".run
+chmod +x ./Ascend-cann-toolkit_8.1.RC1_linux-"$(uname -i)".run
+./Ascend-cann-toolkit_8.1.RC1_linux-"$(uname -i)".run --full
 
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
 
-wget https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/Milan-ASL/Milan-ASL%20V100R001C21B800TP051/Ascend-cann-kernels-910b_8.1.RC1.alpha002_linux-aarch64.run
-chmod +x ./Ascend-cann-kernels-910b_8.0.0_linux-aarch64.run
-./Ascend-cann-kernels-910b_8.0.0_linux-aarch64.run --install
+wget https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%208.1.RC1/Ascend-cann-kernels-910b_8.1.RC1_linux-"$(uname -i)".run
+chmod +x ./Ascend-cann-kernels-910b_8.1.RC1_linux-"$(uname -i)".run
+./Ascend-cann-kernels-910b_8.1.RC1_linux-"$(uname -i)".run --install
 
-# TODO: replace with the latest nnal
-wget https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%208.0.0/Ascend-cann-nnal_8.0.0_linux-aarch64.run
-chmod +x ./Ascend-cann-nnal_8.0.0_linux-aarch64.run
-./Ascend-cann-nnal_8.0.0_linux-aarch64.run --install
+wget https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%208.1.RC1/Ascend-cann-nnal_8.1.RC1_linux-"$(uname -i)".run
+chmod +x ./Ascend-cann-nnal_8.1.RC1_linux-"$(uname -i)".run
+./Ascend-cann-nnal_8.1.RC1_linux-"$(uname -i)".run --install
 
 source /usr/local/Ascend/nnal/atb/set_env.sh
 ```
@@ -214,7 +213,12 @@ docker run --rm \
 ```
 
 ```{note}
-vLLM and vLLM Ascend code are placed in `/workspace` in the docker image. And they are installed in develop mode so that the developer could easily modify the code.
+1. vLLM and vLLM Ascend code are placed in `/vllm-workspace` in the docker image. And they are installed in develop mode so that the developer could easily modify the code.
+
+2. The entrypath of the docker container is `/workspace`.
+
+3. **Optional**: Install MindIE Turbo for Performance acceleration: `pip install mindie_turbo==|pip_vllm_ascend_version|`
+
 ```
 
 ::::

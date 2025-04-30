@@ -16,7 +16,7 @@ on:
       - 'main'
       - '*-dev'
     paths:
-      - '.github/workflows/image.yml'
+      - '.github/workflows/image_ubuntu.yml'
       - 'Dockerfile'
       - 'vllm_ascend/**'
   push:
@@ -27,13 +27,13 @@ on:
     tags:
       - 'v*'
     paths:
-      - '.github/workflows/image.yml'
+      - '.github/workflows/image_ubuntu.yml'
       - 'Dockerfile'
       - 'vllm_ascend/**'
 jobs:
 
   build:
-    name: vllm-ascend image
+    name: vllm-ascend ubuntu image
     runs-on: ubuntu-latest
 
     steps:
