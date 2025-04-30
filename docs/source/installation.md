@@ -78,19 +78,20 @@ python -m venv vllm-ascend-env
 source vllm-ascend-env/bin/activate
 
 # Install required python packages.
-pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple attrs numpy<2.0.0 decorator sympy cffi pyyaml pathlib2 psutil protobuf scipy requests absl-py wheel typing_extensions
+pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple attrs 'numpy<2.0.0' decorator sympy cffi pyyaml pathlib2 psutil protobuf scipy requests absl-py wheel typing_extensions
 
 # Download and install the CANN package.
-wget https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%208.0.0/Ascend-cann-toolkit_8.0.0_linux-aarch64.run
+wget https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/Milan-ASL/Milan-ASL%20V100R001C21B800TP051/Ascend-cann-toolkit_8.1.RC1.alpha002_linux-aarch64.run
 chmod +x ./Ascend-cann-toolkit_8.0.0_linux-aarch64.run
 ./Ascend-cann-toolkit_8.0.0_linux-aarch64.run --full
 
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
 
-wget https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%208.0.0/Ascend-cann-kernels-910b_8.0.0_linux-aarch64.run
+wget https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/Milan-ASL/Milan-ASL%20V100R001C21B800TP051/Ascend-cann-kernels-910b_8.1.RC1.alpha002_linux-aarch64.run
 chmod +x ./Ascend-cann-kernels-910b_8.0.0_linux-aarch64.run
 ./Ascend-cann-kernels-910b_8.0.0_linux-aarch64.run --install
 
+# TODO: replace with the latest nnal
 wget https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%208.0.0/Ascend-cann-nnal_8.0.0_linux-aarch64.run
 chmod +x ./Ascend-cann-nnal_8.0.0_linux-aarch64.run
 ./Ascend-cann-nnal_8.0.0_linux-aarch64.run --install
@@ -138,6 +139,15 @@ pip install vllm==|pip_vllm_version|
 pip install vllm-ascend==|pip_vllm_ascend_version| --extra-index https://download.pytorch.org/whl/cpu/
 ```
 
+**Optional**
+Install MindIE Turbo for Performance acceleration:
+
+```{code-block} bash
+   :substitutions:
+# Install MindIE Turbo
+pip install vllm-ascend[mindie_turbo]==|pip_vllm_ascend_version| --extra-index https://download.pytorch.org/whl/cpu/
+```
+
 :::{dropdown} Click here to see "Build from source code"
 or build from **source code**:
 
@@ -153,6 +163,15 @@ VLLM_TARGET_DEVICE=empty pip install . --extra-index https://download.pytorch.or
 git clone  --depth 1 --branch |vllm_ascend_version| https://github.com/vllm-project/vllm-ascend.git
 cd vllm-ascend
 pip install -e . --extra-index https://download.pytorch.org/whl/cpu/
+```
+
+**Optional**
+Install MindIE Turbo for Performance acceleration:
+
+```{code-block} bash
+   :substitutions:
+# Install MindIE Turbo
+pip install mindie_turbo
 ```
 :::
 
@@ -192,6 +211,10 @@ docker run --rm \
     -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
     -v /etc/ascend_install.info:/etc/ascend_install.info \
     -it $IMAGE bash
+```
+
+```{note}
+vLLM and vLLM Ascend code are placed in `/workspace` in the docker image. And they are installed in develop mode so that the developer could easily modify the code.
 ```
 
 ::::
@@ -257,3 +280,10 @@ Prompt: 'The president of the United States is', Generated text: ' a very import
 Prompt: 'The capital of France is', Generated text: ' Paris. The oldest part of the city is Saint-Germain-des-Pr'
 Prompt: 'The future of AI is', Generated text: ' not bright\n\nThere is no doubt that the evolution of AI will have a huge'
 ```
+
+### Compile Enhancement
+
+Get more performance gains by optimizing Python and torch-npu with the Bisheng compiler, please follow these official turtorial:
+
+[Optimizing Python with Bisheng](https://www.hiascend.com/document/detail/zh/Pytorch/600/ptmoddevg/trainingmigrguide/performance_tuning_0063.html)
+[Optimizing torch-npu with Bisheng](https://www.hiascend.com/document/detail/zh/Pytorch/600/ptmoddevg/trainingmigrguide/performance_tuning_0058.html)
