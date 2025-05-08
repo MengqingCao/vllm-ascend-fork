@@ -338,7 +338,7 @@ def get_requirements() -> List[str]:
 cmdclass = {"build_ext": cmake_build_ext, "install": custom_install}
 
 setup(
-    name="vllm_ascend",
+    name="cmq-test",
     # Follow:
     # https://packaging.python.org/en/latest/specifications/version-specifiers
     version=VERSION,
