@@ -1006,7 +1006,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         max_gen_len = sampled_token_ids.shape[-1]
         if max_gen_len == 1:
             # No spec decode tokens.
-            valid_sampled_token_ids = sampled_token_ids.tolist()
+            valid_sampled_token_ids = sampled_token_ids.cpu().tolist()
         else:
             # Includes spec decode tokens.
             valid_sampled_token_ids = self.rejection_sampler.parse_output(
