@@ -581,12 +581,12 @@ class CustomDeepseekV2MLAAttention(DeepseekV2MLAAttention):
             forward_kwargs['ckq'] = ckq
         else:
             hidden_states_or_q_c = hidden_states
-        if self.torchair_graph_enabled:
+        is_mtp_model = attn_metadata is not None and attn_metadata.is_mtp_model
+        if self.torchair_graph_enabled and not is_mtp_model:
             output_shape = hidden_states.shape
             output = torch.empty(output_shape,
                                  dtype=hidden_states_or_q_c.dtype,
                                  device=hidden_states_or_q_c.device)
-            forward_kwargs['output'] = output
             output = self.mla_attn.impl.forward(self.mla_attn,
                                                 hidden_states_or_q_c,
                                                 hidden_states, None, kv_cache,
