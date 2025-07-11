@@ -356,7 +356,7 @@ def topk_wrapper(num_voted_experts):
         num_tokens = scores.shape[0]
         router_scale = _ROUTER_SCALE.squeeze(  # type: ignore
         )
-
+        # TODO: support disable expert parallel
         ep_size = get_ep_group().world_size
         local_num_experts = global_num_experts // ep_size
         local_num_group = topk // ep_size
@@ -463,6 +463,7 @@ class PanguProMoESparseMoeBlock(nn.Module):
             custom_routing_function=topk_wrapper(num_voted_experts),
             prefix=f"{prefix}.experts",
         )
+        self.use_ep = self.experts.use_ep
 
         self.gate = ReplicatedLinear(
             config.hidden_size,
