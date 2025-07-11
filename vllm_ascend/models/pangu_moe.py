@@ -26,7 +26,7 @@ from torch.nn import Parameter
 from transformers import PretrainedConfig
 from vllm.attention import Attention, AttentionMetadata
 from vllm.compilation.decorators import support_torch_compile
-from vllm.config import CacheConfig, VllmConfig
+from vllm.config import CacheConfig, VllmConfig, get_current_vllm_config
 from vllm.distributed import (divide, get_pp_group,
                               get_tensor_model_parallel_world_size,
                               tensor_model_parallel_all_reduce)
@@ -341,7 +341,7 @@ class PanguProMoEMLP(nn.Module):
         return x
 
 
-def topk_wrapper(num_voted_experts):
+def topk_wrapper_with_ep(num_voted_experts, use_ep):
 
     def pangu_group8_topk(
         hidden_states: torch.Tensor,
@@ -356,14 +356,20 @@ def topk_wrapper(num_voted_experts):
         num_tokens = scores.shape[0]
         router_scale = _ROUTER_SCALE.squeeze(  # type: ignore
         )
+
+        use_ep = False
+
         # TODO: support disable expert parallel
-        ep_size = get_ep_group().world_size
+        ep_size = get_ep_group().world_size if use_ep else 1
         local_num_experts = global_num_experts // ep_size
         local_num_group = topk // ep_size
         experts_per_group = global_num_experts // topk
-        local_group_start = get_ep_group().rank_in_group * local_num_experts
-        local_group_end = (get_ep_group().rank_in_group +
-                           1) * local_num_experts
+        local_group_start = 0
+        local_group_end = local_num_experts
+        if use_ep:
+            local_group_start = get_ep_group().rank_in_group * local_num_experts
+            local_group_end = (get_ep_group().rank_in_group +
+                            1) * local_num_experts
         scores = F.softmax(gating_output, dim=1)
         scores = scores[..., local_group_start:local_group_end]
 
@@ -426,6 +432,89 @@ def topk_wrapper(num_voted_experts):
 
     return pangu_group8_topk
 
+def topk_wrapper_without_ep(num_voted_experts):
+
+    def pangu_group8_topk(
+        hidden_states: torch.Tensor,
+        gating_output: torch.Tensor,
+        topk: int,
+        renormalize: bool = False,
+        num_expert_group: int = 0,
+        topk_group: int = 0,
+        global_num_experts: int = 0,
+    ):
+        scores = F.softmax(gating_output, dim=1)
+        num_tokens = scores.shape[0]
+        router_scale = _ROUTER_SCALE.squeeze(  # type: ignore
+        )
+
+        local_num_experts = global_num_experts
+        local_num_group = topk
+        experts_per_group = global_num_experts // topk
+        local_group_start = 0
+        local_group_end = local_num_experts
+
+        scores = F.softmax(gating_output, dim=1)
+        scores = scores[..., local_group_start:local_group_end]
+
+        router_weights = router_scale[local_group_start:local_group_end]
+
+        if num_voted_experts == 8:
+            # use original topk
+            topk_weights, topk_ids = torch.max(scores.view(
+                scores.shape[0], local_num_group, -1),
+                                               dim=-1)
+            bias = torch.arange(0,
+                                local_num_experts,
+                                experts_per_group,
+                                device=scores.device,
+                                dtype=torch.int32).unsqueeze(0)
+            topk_ids = topk_ids.to(torch.int32) + bias
+
+        else:
+            group_expert_indices = torch.arange(experts_per_group,
+                                                dtype=torch.int32,
+                                                device=scores.device).view(
+                                                    1, 1, -1)
+            group_expert_offset = (torch.arange(
+                local_num_group, dtype=torch.int32, device=scores.device) *
+                                   experts_per_group).unsqueeze(0)
+            expert_index_range = torch.arange(experts_per_group,
+                                              dtype=torch.int32,
+                                              device=scores.device)
+
+            scores_grouped = scores.view(num_tokens, local_num_group,
+                                         experts_per_group)
+            best_expert_idx = torch.argmax(scores_grouped,
+                                           dim=2)  # (num_tokens, num_groups)
+            vote_mask = (best_expert_idx.unsqueeze(-1).to(
+                torch.int32) == group_expert_indices)
+
+            expert_vote_freq = vote_mask.sum(dim=0)
+
+            sorted_indices = torch.argsort(expert_vote_freq,
+                                           dim=1,
+                                           descending=True).to(torch.int32)
+            topk_experts = sorted_indices[:, :num_voted_experts]
+            keep_mask = ((
+                topk_experts.unsqueeze(-1) == expert_index_range).any(
+                    dim=1)).unsqueeze(0)
+
+            masked_scores = torch.where(keep_mask, scores_grouped, 0)
+
+            topk_weights, best_pos_in_group = masked_scores.max(dim=2)
+            best_pos_in_group = best_pos_in_group.to(torch.int32)
+            topk_ids = (best_pos_in_group + group_expert_offset).to(
+                torch.int32)
+
+        flatten_topk_ids = topk_ids.view(-1)
+        router_weights = router_weights.index_select(0, flatten_topk_ids).view(
+            topk_ids.shape)
+        topk_weights *= router_weights
+
+        return topk_weights, topk_ids
+
+    return pangu_group8_topk
 
 class PanguProMoESparseMoeBlock(nn.Module):
 
@@ -443,7 +532,8 @@ class PanguProMoESparseMoeBlock(nn.Module):
             raise ValueError(
                 f"Tensor parallel size {self.tp_size} is greater than "
                 f"the number of experts {config.num_experts}.")
-
+        parallel_config = get_current_vllm_config().parallel_config
+        self.use_ep = parallel_config.enable_expert_parallel and (get_tensor_model_parallel_world_size() * get_dp_group().world_size > 1)
         self.num_experts_per_tok = config.num_experts_per_tok
         self.router_scale = torch.nn.Parameter(
             torch.ones((1, self.num_experts)))
@@ -452,7 +542,7 @@ class PanguProMoESparseMoeBlock(nn.Module):
         # good performance without sacrifice too much accuracy. for other platform,
         # this is set to 8 to use original pangu grouped topk.
         num_voted_experts = 5 if is_310p() else 8
-
+        topk_wrapper = topk_wrapper_with_ep if self.use_ep else topk_wrapper_without_ep
         self.experts = FusedMoE(
             num_experts=config.num_experts,
             top_k=config.num_experts_per_tok,
@@ -463,7 +553,6 @@ class PanguProMoESparseMoeBlock(nn.Module):
             custom_routing_function=topk_wrapper(num_voted_experts),
             prefix=f"{prefix}.experts",
         )
-        self.use_ep = self.experts.use_ep
 
         self.gate = ReplicatedLinear(
             config.hidden_size,

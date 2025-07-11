@@ -563,6 +563,7 @@ def fused_experts_moge(
     global_num_experts: int,
     expert_map: torch.Tensor = None,
     apply_router_weight_on_input: bool = False,
+    use_ep: bool = False,
 ) -> torch.Tensor:
     """
 
@@ -578,7 +579,7 @@ def fused_experts_moge(
     Returns:
         hidden_states: Hidden states after routing.
     """
-    ep_size = get_ep_group().world_size
+    ep_size = get_ep_group().world_size if use_ep else 1
     local_num_experts = global_num_experts // ep_size
     local_num_group = top_k // ep_size
 
