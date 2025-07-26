@@ -181,6 +181,9 @@ class NPUPlatform(Platform):
         if not is_310p():
             compilation_config.custom_ops = ["all"]
 
+        scheduler_config = vllm_config.scheduler_config
+        if scheduler_config.num_scheduler_steps > 1:
+            scheduler_config.scheduler_cls = "vllm_ascend.core.async_scheduler.MultiStepScheduler"
         # If ascend_scheduler_config is enabled,
         # extents original scheduler_config to use AscendScheduler.
         if ascend_config.ascend_scheduler_config.enabled:
