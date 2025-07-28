@@ -650,9 +650,9 @@ class MultiStepScheduler(Scheduler):
                             finished_requests=finished_set)
                 finished_req_ids.clear()
 
-            if engine_core_outputs:
-                # Return stats to only one of the front-ends.
-                next(iter(engine_core_outputs.values())).scheduler_stats = (
-                    self.make_stats(spec_decoding_stats))
+        if engine_core_outputs:
+            # Return stats to only one of the front-ends.
+            next(iter(engine_core_outputs.values())).scheduler_stats = (
+                self.make_stats(spec_decoding_stats))
 
         return engine_core_outputs
