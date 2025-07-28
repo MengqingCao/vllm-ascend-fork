@@ -196,6 +196,9 @@ class NPUPlatform(Platform):
                 cache_config.block_size = 128
 
         if envs.VLLM_USE_V1:
+            scheduler_config = vllm_config.scheduler_config
+            if scheduler_config.num_scheduler_steps > 1:
+                scheduler_config.scheduler_cls = "vllm_ascend.core.multi_step_scheduler.MultiStepScheduler"
             # Activate custom ops for v1.
             compilation_config.custom_ops = ["all"]
 
