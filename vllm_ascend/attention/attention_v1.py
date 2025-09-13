@@ -145,6 +145,9 @@ class AscendAttentionBackend(AttentionBackend):
             key_caches[dst_indices] = key_caches[src_indices]
             value_caches[dst_indices] = value_caches[src_indices]
 
+    @staticmethod
+    def get_supported_block_size() -> list[int]:
+        return [64]
 
 class AscendAttentionState(Enum):
     PrefillNoCache = 0
@@ -205,6 +208,7 @@ class AscendAttentionMetadataBuilder:
         self.vllm_config = vllm_config
         self.model_config = vllm_config.model_config
         self.device = device
+        self.block_size = vllm_config.cache_config.block_size
         self.max_num_blocks_per_req = cdiv(self.model_config.max_model_len,
                                            vllm_config.cache_config.block_size)
 
@@ -224,6 +228,8 @@ class AscendAttentionMetadataBuilder:
                                                                        + 1]
 
         block_table = common_attn_metadata.block_table_tensor
+        if block_table.numel() != 0:
+            self.max_num_blocks_per_req = int(self.max_num_blocks_per_req * self.block_size // block_table.shape[1])
         block_table[:num_reqs, :self.max_num_blocks_per_req] = (
             block_table[:num_reqs])
 
@@ -266,9 +272,6 @@ class AscendAttentionMetadataBuilder:
             is_only_prefill=common_attn_metadata.is_only_prefill)
         return attn_metadata
 
-    @staticmethod
-    def get_supported_block_size() -> list[int]:
-        return [64]
 
 
 class AscendAttentionBackendImpl(AttentionImpl):
@@ -586,9 +589,9 @@ def unified_ascend_attention_with_output(
     self = forward_context.no_compile_layers[layer_name]
     kv_cache = self.kv_cache[forward_context.virtual_engine]
     print(f"kv_cache: {kv_cache.shape}")
-    if kv_cache.numel() != 0:
-        block_size_chunk = kv_cache.shape[2] // 64
-        kv_cache = kv_cache.view(2, kv_cache.shape[1] * block_size_chunk, kv_cache.shape[2] // block_size_chunk, kv_cache.shape[3], kv_cache.shape[4])
+    # if kv_cache.numel() != 0:
+    #     block_size_chunk = kv_cache.shape[2] // 64
+    #     kv_cache = kv_cache.view(2, kv_cache.shape[1] * block_size_chunk, kv_cache.shape[2] // block_size_chunk, kv_cache.shape[3], kv_cache.shape[4])
     self.impl.forward(self,
                       query,
                       key,

@@ -2544,8 +2544,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         """
         kv_cache_config = deepcopy(kv_cache_config)
         self.kv_cache_config = kv_cache_config
-        self.may_reinitialize_input_batch(kv_cache_config)
         self.initialize_attn_backend(kv_cache_config)
+        self.may_reinitialize_input_batch(kv_cache_config)
         kv_caches = self.initialize_kv_cache_tensors(kv_cache_config)
 
         if has_kv_transfer_group():
@@ -2612,15 +2612,19 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                 # encounter OOM issue
                 if isinstance(kv_cache_spec, FullAttentionSpec):
                     has_attn = True
+                    factor = int(self.cache_config.block_size / attn_backend.get_supported_block_size()[0])
+                    print(60*"-", self.cache_config.block_size, attn_backend.get_supported_block_size()[0], attn_backend)
+                    num_block_fa = int(factor * num_blocks)
+                    block_size_fa = int(kv_cache_spec.block_size // factor)
                     if self.vllm_config.additional_config.get(
                             "kv_cache_dtype", None) == 'int8':
                         kv_cache_shape = attn_backend.get_bsh_kv_cache_shape(
-                            num_blocks, kv_cache_spec.block_size,
+                            num_block_fa, block_size_fa,
                             kv_cache_spec.num_kv_heads,
                             kv_cache_spec.head_size)
                     else:
                         kv_cache_shape = attn_backend.get_kv_cache_shape(
-                            num_blocks, kv_cache_spec.block_size,
+                            num_block_fa, block_size_fa,
                             kv_cache_spec.num_kv_heads,
                             kv_cache_spec.head_size)
                     dtype = kv_cache_spec.dtype
