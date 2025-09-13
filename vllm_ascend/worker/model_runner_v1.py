@@ -2615,12 +2615,12 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                     if self.vllm_config.additional_config.get(
                             "kv_cache_dtype", None) == 'int8':
                         kv_cache_shape = attn_backend.get_bsh_kv_cache_shape(
-                            num_blocks, kv_cache_spec.block_size,
+                            num_blocks * 5, kv_cache_spec.block_size,
                             kv_cache_spec.num_kv_heads,
                             kv_cache_spec.head_size)
                     else:
                         kv_cache_shape = attn_backend.get_kv_cache_shape(
-                            num_blocks, kv_cache_spec.block_size,
+                            num_blocks *5, kv_cache_spec.block_size,
                             kv_cache_spec.num_kv_heads,
                             kv_cache_spec.head_size)
                     dtype = kv_cache_spec.dtype
@@ -2749,7 +2749,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                         "Fail to determine whether the layout is " \
                         "(2, num_blocks, ...) or (num_blocks, 2, ...) for " \
                         f"a tensor of shape {kv_cache.shape}"
-                    hidden_size = kv_cache.shape[2:].numel()
+                    # print(60*"-", f"kv_cache.shape: {kv_cache.shape}, kv_cache.shape[2:]: {kv_cache.shape[2:]}, kv_cache.shape[2:].numel(): {kv_cache.shape[2:].numel()}, kv_cache.stride()[2:]: {kv_cache.stride()[2:]}")
+                    # import pdb; pdb.set_trace()
+                    hidden_size = kv_cache.shape[2:].numel()  # block size x head size
                     kv_cache.as_strided_(size=kv_cache.shape,
                                          stride=(hidden_size, 2 * hidden_size,
                                                  *kv_cache.stride()[2:]))
@@ -2928,11 +2930,14 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             format. Layers that do not need KV cache are not included.
         """
 
-        block_size = self.vllm_config.cache_config.block_size
+        # block_size = self.vllm_config.cache_config.block_size
+        block_sizes: list[int] = []
         use_mla = self.vllm_config.model_config.use_mla
         kv_cache_spec: dict[str, KVCacheSpec] = {}
         attn_layers = get_layers_from_vllm_config(self.vllm_config, Attention)
         for layer_name, attn_module in attn_layers.items():
+            # block_size = b
+            # blk_table = self.input_batch.block_table[kv_cache_group_id]
             if (kv_tgt_layer :=
                     attn_module.kv_sharing_target_layer_name) is not None:
                 # The layer doesn't need its own KV cache and will use that of
@@ -2948,9 +2953,12 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             # TODO: Support other attention modules, e.g., cross-attention
             # TODO(lucas): move the attention specs into the model layers like
             # the attention backends
+            # NOTE: we pass the logic block size 64 here, to use hybrid block size
             if attn_module.attn_type == AttentionType.DECODER:
                 kv_cache_spec[layer_name] = FullAttentionSpec(
-                    block_size=block_size,
+                    logical_block_size=64,
+                    physical_block_size=320,
+                    block_size=64,
                     num_kv_heads=attn_module.num_kv_heads,
                     head_size=attn_module.head_size,
                     dtype=self.kv_cache_dtype,
@@ -2986,6 +2994,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                 kv_cache_spec[layer_name] = MambaSpec(
                     shapes=mamba_module.get_state_shape(),
                     dtypes=mamba_module.get_state_dtype(),
+                    logical_block_size=max_model_len,
+                    physical_block_size=max_model_len,
                     block_size=max_model_len,
                     page_size_padded=page_size_padded,
                     mamba_type=mamba_module.mamba_type,
