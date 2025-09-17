@@ -94,4 +94,4 @@ def verify_and_update_config(cls, vllm_config) -> None:
             "exactly equal.", mamba_padding_pct)
 
 
-vllm.model_executor.models.config.HybridAttentionMambaModelConfig.verify_and_update_config = verify_and_update_config
+# vllm.model_executor.models.config.HybridAttentionMambaModelConfig.verify_and_update_config = verify_and_update_config

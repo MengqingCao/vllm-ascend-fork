@@ -36,7 +36,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from tqdm import tqdm  # type: ignore
 from vllm.attention import AttentionType, get_attn_backend
-from vllm.attention.backends.abstract import AttentionBackend
+from vllm.attention.backends.abstract import AttentionBackend, MultipleOf
 from vllm.attention.layer import Attention
 from vllm.compilation.counter import compilation_counter
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
@@ -71,7 +71,7 @@ from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
 from vllm.v1.attention.backends.utils import \
     reorder_batch_to_split_decodes_and_prefills
 from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
-from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
+from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec, EncoderOnlyAttentionSpec,
                                         KVCacheConfig, KVCacheSpec, MambaSpec)
 from vllm.v1.outputs import (EMPTY_MODEL_RUNNER_OUTPUT, AsyncModelRunnerOutput,
                              DraftTokenIds, LogprobsTensors, ModelRunnerOutput)
@@ -445,7 +445,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                 self.is_pooling_model,
                 self.vllm_config.model_config.logits_processors),
             is_pooling_model=self.is_pooling_model,
-            kernel_block_sizes=None,
+            kernel_block_sizes=[self.cache_config.block_size],
         )
         self.num_accepted_tokens = self._make_buffer(self.max_num_reqs,
                                                      dtype=torch.int64)
@@ -652,8 +652,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             self.input_batch.num_computed_tokens_cpu[req_index] = (
                 num_computed_tokens)
             if new_block_ids is not None:
-                self.input_batch.block_table.append_row(
-                    new_block_ids, req_index)
+                self.input_batch.block_table.append_row(req_data.new_block_ids[i],
+                                                        req_index)
 
             # For the last rank, we don't need to update the token_ids_cpu
             # because the sampled tokens are already cached.
@@ -2398,8 +2398,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         """
         kv_cache_config = deepcopy(kv_cache_config)
         self.kv_cache_config = kv_cache_config
-        self.may_reinitialize_input_batch(kv_cache_config)
         self.initialize_attn_backend(kv_cache_config)
+        # Reinitialize need to after initialize_attn_backend
+        self.may_reinitialize_input_batch(kv_cache_config)
 
         if self.model_config.is_deepseek_mla:
             kv_caches = self.initialize_kv_cache_tensors_deepseek(
@@ -2575,10 +2576,15 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                             kv_cache_spec.head_size)
                     elif hasattr(attn_backend, "get_supported_block_size"
                                  ) and not self.model_config.is_deepseek_mla:
-                        block_size = attn_backend.get_supported_block_size()[0]
-                        block_size_chunk = kv_cache_spec.block_size // block_size
+
+                        kv_manager_block_size = kv_cache_spec.block_size
+                        logical_kernel_size = self._select_kernel_block_size(
+                            kv_manager_block_size, attn_backend)
+                        num_blocks_per_phys_block = (kv_manager_block_size //
+                                                    logical_kernel_size)
+                        logical_num_blocks = num_blocks * num_blocks_per_phys_block
                         kv_cache_shape = attn_backend.get_kv_cache_shape(
-                            num_blocks * block_size_chunk, block_size,
+                            logical_num_blocks, logical_kernel_size,
                             kv_cache_spec.num_kv_heads,
                             kv_cache_spec.head_size)
                     else:
@@ -2630,6 +2636,60 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                 yield self.kv_cache_config.kv_cache_groups[
                     kv_cache_spec_id].kv_cache_spec, attn_group
 
+    def _select_kernel_block_size(self, kv_manager_block_size: int,
+                                  backend_cls: type[AttentionBackend]) -> int:
+        """
+        Select the optimal kernel block size for a given physical block size.
+
+        Args:
+            kv_manager_block_size: The physical block size of the KV cache
+            backend_cls: The attention backend class
+
+        Returns:
+            The selected kernel block size (largest available)
+
+        Raises:
+            ValueError: If no valid kernel block size can be found that
+                       satisfies the backend's constraints
+        """
+        supported_constraints = backend_cls.get_supported_block_size()
+        selected_kernel_size = kv_manager_block_size
+        constraint_satisfied = False
+        valid_constraints = []
+
+        for constraint in supported_constraints:
+            if (isinstance(constraint, int)
+                    and kv_manager_block_size % constraint == 0):
+                valid_constraints.append(constraint)
+            elif (isinstance(constraint, MultipleOf)
+                  and kv_manager_block_size % constraint.base == 0):
+                valid_constraints.append(constraint.base)
+
+        if valid_constraints:
+            selected_kernel_size = max(valid_constraints)
+            constraint_satisfied = True
+
+        if not constraint_satisfied and supported_constraints:
+            # Only raise error if there are actual constraints to satisfy
+            # and none of them were met
+            constraint_strs = []
+            for constraint in supported_constraints:
+                if isinstance(constraint, int):
+                    constraint_strs.append(f"{constraint}")
+                elif isinstance(constraint, MultipleOf):
+                    constraint_strs.append(f"multiple of {constraint.base}")
+
+            raise ValueError(
+                f"Physical block size {kv_manager_block_size} does not "
+                f"satisfy any constraints for {backend_cls.__name__} "
+                f"backend. Supported constraints: "
+                f"{', '.join(constraint_strs)}. "
+                f"The physical block size must be compatible with at least "
+                f"one constraint.")
+
+        return selected_kernel_size
+
+
     def may_reinitialize_input_batch(self,
                                      kv_cache_config: KVCacheConfig) -> None:
         """
@@ -2643,8 +2703,14 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         block_sizes = [
             kv_cache_group.kv_cache_spec.block_size
             for kv_cache_group in kv_cache_config.kv_cache_groups
+            if not isinstance(kv_cache_group.kv_cache_spec,
+                              EncoderOnlyAttentionSpec)
         ]
 
+        # Generate kernel_block_sizes that matches each block_size
+        # For attention backends that support virtual block splitting,
+        # use the supported block sizes from the backend
+        # For other backends (like Mamba), use [0] (no splitting)
         # Generate kernel_block_sizes that matches each block_size
         # For attention backends that support virtual block splitting,
         # use the supported block sizes from the backend
@@ -2652,34 +2718,28 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         kernel_block_sizes = []
         for kv_cache_group_id, kv_cache_group in enumerate(
                 kv_cache_config.kv_cache_groups):
-            if isinstance(kv_cache_group.kv_cache_spec, AttentionSpec):
+            if isinstance(kv_cache_group.kv_cache_spec,
+                          EncoderOnlyAttentionSpec):
+                continue
+            elif isinstance(kv_cache_group.kv_cache_spec, AttentionSpec):
                 # This is an attention backend that supports virtual
                 # block splitting. Get the supported block sizes from
                 # the backend.
-                try:
-                    attn_groups = self.attn_groups[kv_cache_group_id]
-                except IndexError:
-                    attn_groups = None
-                if attn_groups:
-                    # Use the backend's supported block size list
-                    backend = attn_groups[0].backend
-                    supported_sizes = backend.get_supported_block_size()
-                    # If no specific sizes supported, use cache config
-                    # block_size
-                    kernel_block_size_list = (supported_sizes
-                                              if supported_sizes else
-                                              [self.cache_config.block_size])
-                else:
-                    # Fallback to cache config block_size if no backend found
-                    kernel_block_size_list = [
-                        64
-                    ] if not self.model_config.is_deepseek_mla else [0]
-                kernel_block_sizes.append(kernel_block_size_list)
+                attn_groups = self.attn_groups[kv_cache_group_id]
+                kv_manager_block_size = kv_cache_group.kv_cache_spec.block_size
+                backend_cls = attn_groups[0].backend
+                selected_kernel_size = self._select_kernel_block_size(
+                    kv_manager_block_size, backend_cls)
+                kernel_block_sizes.append(selected_kernel_size)
             else:
                 # This is likely Mamba or other non-attention cache,
                 # no splitting.
-                kernel_block_sizes.append([0])
-        if kernel_block_sizes != [self.cache_config.block_size]:
+                kernel_block_sizes.append(
+                    kv_cache_group.kv_cache_spec.block_size)
+
+        if block_sizes != [
+                self.cache_config.block_size
+        ] or kernel_block_sizes != [self.cache_config.block_size]:
             assert self.cache_config.cpu_offload_gb == 0, (
                 "Cannot re-initialize the input batch when CPU weight "
                 "offloading is enabled. See https://github.com/vllm-project/vllm/pull/18298 "  # noqa: E501

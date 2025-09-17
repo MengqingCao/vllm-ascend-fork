@@ -38,7 +38,7 @@ from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.spec_decode.utils import is_spec_decode_unsupported
 from vllm.v1.utils import copy_slice
 
-from vllm_ascend.worker.block_table import MultiGroupBlockTable
+from vllm.v1.worker.block_table import MultiGroupBlockTable
 
 
 @dataclass
@@ -98,7 +98,7 @@ class InputBatch:
             is_spec_decode: bool = False,
             is_pooling_model: bool = False,
             num_speculative_tokens: int = 0,
-            kernel_block_sizes: Optional[list[list[int]]] = None):
+            kernel_block_sizes: Optional[int] = None):
         self.is_pooling_model = is_pooling_model
         self.is_spec_decode = is_spec_decode
         self.max_num_reqs = max_num_reqs
@@ -143,7 +143,7 @@ class InputBatch:
             device=device,
             block_sizes=block_sizes,
             num_speculative_tokens=num_speculative_tokens,
-            kernel_sizes=kernel_block_sizes)
+            kernel_block_sizes=kernel_block_sizes)
 
         # Sampling-related.
         self.temperature = torch.empty((max_num_reqs, ),
