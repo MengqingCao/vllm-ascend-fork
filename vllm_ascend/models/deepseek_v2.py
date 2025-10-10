@@ -220,7 +220,7 @@ class CustomDeepseekV2MLAAttention(DeepseekV2MLAAttention):
             o_proj=self.o_proj,
             rotary_emb=self.rotary_emb,
             indexer=None,
-            is_sparse=self.is_v32,
+            is_sparse=hasattr(config, "index_topk"),
         )
 
         self.mla_attn = AscendMultiHeadLatentAttention(
