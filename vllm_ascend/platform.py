@@ -288,25 +288,27 @@ class NPUPlatform(Platform):
             vllm_config.scheduler_config = ascend_scheduler_config
 
     @classmethod
-    def get_attn_backend_cls(cls,
-                             selected_backend,
-                             head_size,
-                             dtype,
-                             kv_cache_dtype,
-                             block_size,
-                             use_v1,
-                             use_mla,
-                             use_sfa,
-                             has_sink=False):
+    def get_attn_backend_cls(
+        cls,
+        selected_backend,
+        head_size,
+        dtype,
+        kv_cache_dtype,
+        block_size,
+        use_v1,
+        use_mla,
+        has_sink=False,
+        use_sparse=False,
+    ):
         if not use_v1:
             raise ValueError("vLLM Ascend does not support V0 engine.")
 
         ascend_config = get_ascend_config()
 
         if use_mla and ascend_config.enable_shared_expert_dp:
-            if use_mla and not use_sfa:
+            if use_mla and not use_sparse:
                 return "vllm_ascend.torchair.torchair_mla.AscendMLATorchairBackend"
-            if use_mla and use_sfa:
+            if use_mla and use_sparse:
                 return "vllm_ascend.torchair.torchair_sfa.AscendSFATorchairBackend"
 
         use_torchair = ascend_config.torchair_graph_config.enabled
@@ -325,7 +327,7 @@ class NPUPlatform(Platform):
             (True, True, True):
             "vllm_ascend.torchair.torchair_sfa.AscendSFATorchairBackend",
         }
-        return backend_map[(use_mla, use_sfa, use_torchair)]
+        return backend_map[(use_mla, use_sparse, use_torchair)]
 
     @classmethod
     def get_punica_wrapper(cls) -> str:

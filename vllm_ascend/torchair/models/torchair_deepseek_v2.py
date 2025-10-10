@@ -31,7 +31,7 @@ import torch
 import torch_npu
 from torch import nn
 from transformers import PretrainedConfig
-from vllm.attention import Attention, AttentionMetadata
+from vllm.attention import AttentionMetadata
 from vllm.config import CacheConfig, ModelConfig, VllmConfig
 from vllm.distributed import (get_pp_group, get_tensor_model_parallel_rank,
                               get_tensor_model_parallel_world_size,
@@ -69,7 +69,10 @@ from vllm.sequence import IntermediateTensors
 
 from vllm_ascend import envs
 from vllm_ascend.ascend_config import get_ascend_config
-from vllm_ascend.models.layers.sfa import Indexer
+from vllm_ascend.models.layers.mla import (AscendMLAModules,
+                                           AscendMultiHeadLatentAttention)
+from vllm_ascend.models.layers.sfa import (AscendSFAModules,
+                                           AscendSparseFlashAttention, Indexer)
 from vllm_ascend.quantization.quant_config import AscendLinearMethod
 from vllm_ascend.torchair.ops.torchair_fused_moe import TorchairAscendFusedMoE
 from vllm_ascend.torchair.quantization.torchair_w8a8_dynamic import \
@@ -551,28 +554,62 @@ class TorchairDeepseekV2MLAAttention(DeepseekV2MLAAttention):
         #     k_c.size(1) + k_pe.size(1) == kv_cache.size(2)
         # i.e.
         #     kv_lora_rank + qk_rope_head_dim == head_size
-        self.mla_attn = Attention(
-            num_heads=self.num_local_heads,
-            head_size=self.kv_lora_rank + self.qk_rope_head_dim,
-            scale=self.scaling,
-            num_kv_heads=1,
-            cache_config=cache_config,
-            quant_config=quant_config,
-            prefix=f"{prefix}.attn",
-            use_mla=True,
-            # MLA Args
-            q_lora_rank=self.q_lora_rank,
-            kv_lora_rank=self.kv_lora_rank,
-            qk_nope_head_dim=self.qk_nope_head_dim,
-            qk_rope_head_dim=self.qk_rope_head_dim,
-            qk_head_dim=self.qk_head_dim,
-            v_head_dim=self.v_head_dim,
-            rotary_emb=self.rotary_emb,
+
+        mla_modules = AscendMLAModules(
+            q_a_proj=self.q_a_proj if self.q_lora_rank is not None else None,
+            q_a_layernorm=self.q_a_layernorm
+            if self.q_lora_rank is not None else None,
             q_proj=self.q_proj if self.q_lora_rank is None else self.q_b_proj,
             kv_a_proj_with_mqa=self.kv_a_proj_with_mqa,
             kv_a_layernorm=self.kv_a_layernorm,
             kv_b_proj=self.kv_b_proj,
+            # fused_qkv_a_proj=self.fused_qkv_a_proj
+            # if self.q_lora_rank is not None
+            # else None,
             o_proj=self.o_proj,
+            rotary_emb=self.rotary_emb,
+            indexer=None,
+            is_sparse=self.is_v32,
+        )
+
+        # self.mla_attn = Attention(
+        #     num_heads=self.num_local_heads,
+        #     head_size=self.kv_lora_rank + self.qk_rope_head_dim,
+        #     scale=self.scaling,
+        #     num_kv_heads=1,
+        #     cache_config=cache_config,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.attn",
+        #     use_mla=True,
+        #     # MLA Args
+        #     q_lora_rank=self.q_lora_rank,
+        #     kv_lora_rank=self.kv_lora_rank,
+        #     qk_nope_head_dim=self.qk_nope_head_dim,
+        #     qk_rope_head_dim=self.qk_rope_head_dim,
+        #     qk_head_dim=self.qk_head_dim,
+        #     v_head_dim=self.v_head_dim,
+        #     rotary_emb=self.rotary_emb,
+
+        self.mla_attn = AscendMultiHeadLatentAttention(
+            self.kv_lora_rank + self.qk_rope_head_dim,
+            self.num_local_heads,
+            self.enable_shared_expert_dp,
+            self.debug_layer_idx,
+            self.first_k_dense_replace,
+            self.tp_size,
+            mla_modules,
+            self.num_local_heads,
+            self.scaling,
+            self.layers,
+            self.kv_lora_rank,
+            self.qk_rope_head_dim,
+            self.q_lora_rank,
+            self.qk_nope_head_dim,
+            self.qk_head_dim,
+            self.v_head_dim,
+            cache_config,
+            quant_config,
+            prefix,
         )
 
     def forward(
@@ -779,25 +816,7 @@ class TorchairDeepseekV2SFAAttention(DeepseekV2MLAAttention):
             index_topk=self.index_topk,
             prefix=f"{prefix}.indexer",
         )
-
-        self.sfa_attn = Attention(
-            num_heads=self.num_local_heads,
-            head_size=self.kv_lora_rank + self.qk_rope_head_dim,
-            scale=self.scaling,
-            num_kv_heads=1,
-            cache_config=cache_config,
-            quant_config=quant_config,
-            prefix=f"{prefix}.attn",
-            use_mla=True,
-            use_sfa=True,
-            # SFA Args
-            q_lora_rank=self.q_lora_rank,
-            kv_lora_rank=self.kv_lora_rank,
-            qk_nope_head_dim=self.qk_nope_head_dim,
-            qk_rope_head_dim=self.qk_rope_head_dim,
-            qk_head_dim=self.qk_head_dim,
-            v_head_dim=self.v_head_dim,
-            rotary_emb=self.rotary_emb,
+        sfa_modules = AscendSFAModules(
             q_a_proj=self.q_a_proj if self.q_lora_rank is not None else None,
             q_a_layernorm=self.q_a_layernorm
             if self.q_lora_rank is not None else None,
@@ -806,8 +825,28 @@ class TorchairDeepseekV2SFAAttention(DeepseekV2MLAAttention):
             kv_a_layernorm=self.kv_a_layernorm,
             kv_b_proj=self.kv_b_proj,
             o_proj=self.o_proj,
-            indexer=self.indexer,
-            decoder_layer=decoder_layer,
+            rotary_emb=self.rotary_emb,
+            indexer=self.indexer)
+
+        self.sfa_attn = AscendSparseFlashAttention(
+            self.hidden_size,
+            self.enable_shared_expert_dp,
+            self.debug_layer_idx,
+            self.first_k_dense_replace,
+            self.tp_size,
+            sfa_modules,
+            self.num_local_heads,
+            self.scaling,
+            self.layers,
+            self.kv_lora_rank,
+            self.qk_rope_head_dim,
+            self.q_lora_rank,
+            self.qk_nope_head_dim,
+            self.qk_head_dim,
+            self.v_head_dim,
+            cache_config,
+            quant_config,
+            prefix,
         )
 
     def forward(
@@ -877,12 +916,12 @@ class TorchairDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
         self.tp_rank = get_tp_group().rank_in_group
         ascend_config = get_ascend_config()
         self.use_mla = False
-        self.use_sfa = False
+        self.use_sparse = False
         # TODO: enable mla in vllm-ascend
         if model_config.use_mla:
-            if ascend_config.use_sfa:
+            if hasattr(model_config.hf_config, "index_topk"):
                 attn_cls = TorchairDeepseekV2SFAAttention
-                self.use_sfa = True
+                self.use_sparse = True
             else:
                 attn_cls = TorchairDeepseekV2MLAAttention  # type: ignore[assignment]
             self.use_mla = True
@@ -947,7 +986,7 @@ class TorchairDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
         # Self Attention
         if attn_metadata is not None:
             decoding_condition_met = (
-                not attn_metadata.is_prefill if self.use_sfa else
+                not attn_metadata.is_prefill if self.use_sparse else
                 attn_metadata.num_decodes > 0 if self.use_mla else False)
             mla_moe_communication = decoding_condition_met and self.mla_moe_communication and replace_allreduce
         else:

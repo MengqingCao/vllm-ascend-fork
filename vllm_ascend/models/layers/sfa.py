@@ -24,11 +24,11 @@ from typing import Optional
 
 import torch
 from torch import nn
-from vllm.attention import Attention, AttentionMetadata
+from vllm.attention import AttentionMetadata
 from vllm.config import CacheConfig, get_current_vllm_config
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.model_executor.layers.linear import ReplicatedLinear
-from vllm.model_executor.layers.mla import MultiHeadLatentAttention
+from vllm.model_executor.layers.mla import MultiHeadLatentAttentionWrapper
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.utils import direct_register_custom_op
 
@@ -46,7 +46,7 @@ class AscendSFAModules:
     indexer: torch.nn.Module
 
 
-class AscendSparseFlashAttention(MultiHeadLatentAttention):
+class AscendSparseFlashAttention(MultiHeadLatentAttentionWrapper):
 
     def __init__(
         self,
@@ -84,33 +84,34 @@ class AscendSparseFlashAttention(MultiHeadLatentAttention):
         self.qk_head_dim = qk_head_dim
         self.v_head_dim = v_head_dim
         self.prefix = prefix
+        self.scaling = scaling
 
-        self.sfa_attn = Attention(
-            num_heads=self.num_local_heads,
-            head_size=self.kv_lora_rank + self.qk_rope_head_dim,
-            scale=scaling,
-            num_kv_heads=1,
-            cache_config=cache_config,
-            quant_config=quant_config,
-            prefix=f"{prefix}.attn",
-            use_mla=True,
-            use_sfa=True,
-            # SFA Args
-            q_lora_rank=self.q_lora_rank,
-            kv_lora_rank=self.kv_lora_rank,
-            qk_nope_head_dim=self.qk_nope_head_dim,
-            qk_rope_head_dim=self.qk_rope_head_dim,
-            qk_head_dim=self.qk_head_dim,
-            v_head_dim=self.v_head_dim,
-            rotary_emb=sfa_modules.rotary_emb,
-            q_a_proj=sfa_modules.q_a_proj,
-            q_a_layernorm=sfa_modules.q_a_layernorm,
-            q_proj=sfa_modules.q_proj,
-            kv_a_proj_with_mqa=sfa_modules.kv_a_proj_with_mqa,
-            kv_a_layernorm=sfa_modules.kv_a_layernorm,
-            kv_b_proj=sfa_modules.kv_b_proj,
-            o_proj=sfa_modules.o_proj,
-            indexer=sfa_modules.indexer)
+        sfa_modules = AscendSFAModules(
+            q_a_proj=self.q_a_proj if self.q_lora_rank is not None else None,
+            q_a_layernorm=self.q_a_layernorm
+            if self.q_lora_rank is not None else None,
+            q_proj=self.q_proj if self.q_lora_rank is None else self.q_b_proj,
+            kv_a_proj_with_mqa=self.kv_a_proj_with_mqa,
+            kv_a_layernorm=self.kv_a_layernorm,
+            kv_b_proj=self.kv_b_proj,
+            o_proj=self.o_proj,
+            rotary_emb=self.rotary_emb,
+            indexer=self.indexer)
+
+        self.sfa_attn = MultiHeadLatentAttentionWrapper(
+            self.hidden_size,
+            self.num_local_heads,
+            self.scaling,
+            self.qk_nope_head_dim,
+            self.qk_rope_head_dim,
+            self.v_head_dim,
+            self.q_lora_rank,
+            self.kv_lora_rank,
+            sfa_modules,
+            cache_config,
+            quant_config,
+            prefix,
+        )
 
         compilation_config = get_current_vllm_config().compilation_config
         if prefix in compilation_config.static_forward_context:

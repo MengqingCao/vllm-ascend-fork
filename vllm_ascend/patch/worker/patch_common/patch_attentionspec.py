@@ -17,14 +17,14 @@ class AttentionSpec(KVCacheSpec):
     head_size: int
     dtype: torch.dtype
     use_mla: bool
-    use_sfa: bool
+    use_sparse: bool
 
     @property
     def page_size_bytes(self) -> int:
         # For MLA we only store a single latent vector
         coef = 1 if self.use_mla else 2
         sfa_bytes = 128 * self.block_size * get_dtype_size(
-            self.dtype) if self.use_sfa else 0
+            self.dtype) if self.use_sparse else 0
 
         return coef * self.block_size * self.num_kv_heads * self.head_size \
                 * get_dtype_size(self.dtype) + sfa_bytes
@@ -88,7 +88,7 @@ class AscendFullAttentionSpec(FullAttentionSpec, AttentionSpec):
             head_size=specs[0].head_size,
             dtype=specs[0].dtype,
             use_mla=specs[0].use_mla,
-            use_sfa=specs[0].use_sfa,
+            use_sparse=specs[0].use_sparse,
             sliding_window=cls.merge_window_sizes(sliding_window),
             attention_chunk_size=cls.merge_window_sizes(attention_chunk_size),
         )

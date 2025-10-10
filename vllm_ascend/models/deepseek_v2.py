@@ -42,7 +42,6 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                ReplicatedLinear,
                                                RowParallelLinear)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-from vllm.model_executor.layers.mla import MultiHeadLatentAttention
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
@@ -59,7 +58,8 @@ from vllm.model_executor.models.utils import (PPMissingLayer,
                                               maybe_prefix)
 
 from vllm_ascend.ascend_config import get_ascend_config
-from vllm_ascend.models.layers.mla import AscendMLAModules
+from vllm_ascend.models.layers.mla import (AscendMLAModules,
+                                           AscendMultiHeadLatentAttention)
 from vllm_ascend.models.layers.sfa import (AscendSFAModules,
                                            AscendSparseFlashAttention, Indexer)
 from vllm_ascend.ops.fused_moe import AscendFusedMoE
@@ -204,6 +204,8 @@ class CustomDeepseekV2MLAAttention(DeepseekV2MLAAttention):
             mscale = yarn_get_mscale(scaling_factor, float(mscale_all_dim))
             self.scaling = self.scaling * mscale * mscale
 
+        self.indexer = None
+
         mla_modules = AscendMLAModules(
             q_a_proj=self.q_a_proj if self.q_lora_rank is not None else None,
             q_a_layernorm=self.q_a_layernorm
@@ -212,12 +214,18 @@ class CustomDeepseekV2MLAAttention(DeepseekV2MLAAttention):
             kv_a_proj_with_mqa=self.kv_a_proj_with_mqa,
             kv_a_layernorm=self.kv_a_layernorm,
             kv_b_proj=self.kv_b_proj,
+            # fused_qkv_a_proj=self.fused_qkv_a_proj
+            # if self.q_lora_rank is not None
+            # else None,
             o_proj=self.o_proj,
             rotary_emb=self.rotary_emb,
+            indexer=None,
+            is_sparse=self.is_v32,
         )
 
-        self.mla_attn = MultiHeadLatentAttention(
-            self.hidden_size,
+        self.mla_attn = AscendMultiHeadLatentAttention(
+            self.kv_lora_rank + self.qk_rope_head_dim,
+            self.num_local_heads,
             self.enable_shared_expert_dp,
             self.debug_layer_idx,
             self.first_k_dense_replace,
@@ -432,7 +440,6 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
         cache_config = vllm_config.cache_config
         quant_config = vllm_config.quant_config
         parallel_config = vllm_config.parallel_config
-        ascend_config = get_ascend_config()
 
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
@@ -448,7 +455,7 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
         self.tp_rank = get_tp_group().rank_in_group
         # TODO: enable mla in vllm-ascend
         if model_config.use_mla:
-            if ascend_config.use_sfa:
+            if hasattr(model_config.hf_config, "index_topk"):
                 attn_cls = CustomDeepseekV2SFAAttention
             else:
                 attn_cls = CustomDeepseekV2MLAAttention

@@ -57,6 +57,7 @@ class NPUTorchairModelRunner(NPUModelRunner):
                       self.decode_token_per_req))
         self.attn_metadata_builder = self.attn_backend.get_builder_cls()(
             None, None, vllm_config, device)
+        self.use_sparse = hasattr(self.model_config.hf_config, "index_topk")
 
         register_torchair_model()
         torchair_ops_patch()
@@ -376,7 +377,7 @@ class NPUTorchairModelRunner(NPUModelRunner):
             npu_backend = torchair.get_npu_backend(compiler_config=config)
             self.torchair_compiled_model = torch.compile(
                 self.model,
-                dynamic=not self.ascend_config.use_sfa,
+                dynamic=not self.use_sparse,
                 fullgraph=True,
                 backend=npu_backend)
             return self.torchair_compiled_model
@@ -399,7 +400,7 @@ class NPUTorchairModelRunner(NPUModelRunner):
             self.torchair_compiled_models[
                 batch_size] = torchair.inference.cache_compile(
                     self.model.__dict__[forward_proxy_name],
-                    dynamic=not self.ascend_config.use_sfa,
+                    dynamic=not self.use_sparse,
                     fullgraph=True,
                     cache_dir=TORCHAIR_CACHE_DIR,
                     config=config,
