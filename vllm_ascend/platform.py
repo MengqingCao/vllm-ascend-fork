@@ -163,6 +163,8 @@ class NPUPlatform(Platform):
             "kv_cache_dtype", None)
         if kv_cache_dtype is not None:
             vllm_config.cache_config.cache_dtype = kv_cache_dtype
+        elif model_config and hasattr(model_config.hf_config, "index_topk"):
+            vllm_config.cache_config.cache_dtype = model_config.dtype
         if model_config is None:
             logger.warning("Model config is missing. This may indicate "
                            "that we are running a test case")
