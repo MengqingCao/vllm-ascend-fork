@@ -395,7 +395,8 @@ class CustomDeepseekV2SFAAttention(DeepseekV2MLAAttention):
             kv_b_proj=self.kv_b_proj,
             o_proj=self.o_proj,
             rotary_emb=self.rotary_emb,
-            indexer=self.indexer)
+            indexer=self.indexer,
+            is_sparse=hasattr(config, "index_topk"))
 
         self.sfa_attn = AscendSparseFlashAttention(
             self.hidden_size,
