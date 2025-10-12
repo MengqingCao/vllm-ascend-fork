@@ -25,7 +25,6 @@ from vllm.distributed import (get_dp_group, get_ep_group, get_tp_group,
 from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.fused_moe.layer import (
     FusedMoE, UnquantizedFusedMoEMethod, determine_expert_map)
-from vllm.model_executor.layers.shared_fused_moe import SharedFusedMoE
 
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import MoECommType
@@ -35,7 +34,14 @@ from vllm_ascend.eplb.core.eplb_utils import (determine_default_expert_map,
 from vllm_ascend.ops.expert_load_balancer import ExpertLoadBalancer
 from vllm_ascend.ops.moe.experts_selector import select_experts
 from vllm_ascend.ops.moe.moe_comm_method import setup_moe_comm_method
-from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, is_310p, npu_stream_switch
+from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_NZ, is_310p,
+                               npu_stream_switch, vllm_version_is)
+
+if vllm_version_is("0.11.0"):
+    from vllm.model_executor.layers.shared_fused_moe import SharedFusedMoE
+else:
+    from vllm.model_executor.layers.fused_moe.shared_fused_moe import \
+        SharedFusedMoE
 
 original_unquantized_fused_moe_init_func = UnquantizedFusedMoEMethod.__init__
 

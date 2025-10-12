@@ -25,14 +25,13 @@ from typing import Optional
 import torch
 from torch import nn
 from vllm.attention import AttentionMetadata
+from vllm.attention.layer import MLAAttention
 from vllm.config import CacheConfig, get_current_vllm_config
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.model_executor.layers.linear import ReplicatedLinear
 from vllm.model_executor.layers.mla import MultiHeadLatentAttentionWrapper
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.utils import direct_register_custom_op
-from vllm_ascend.models.layers.mla import AscendMultiHeadLatentAttention
-from vllm.attention.layer import MLAAttention
 
 
 @dataclass
