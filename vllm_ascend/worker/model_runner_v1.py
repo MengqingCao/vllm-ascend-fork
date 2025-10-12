@@ -3187,7 +3187,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             elif isinstance(attn_module, MLAAttention):
                 kv_cache_spec[layer_name] = FullAttentionSpec(
                     block_size=block_size,
-                    num_kv_heads=attn_module.num_heads,
+                    num_kv_heads=1,
                     head_size=attn_module.head_size,
                     dtype=self.kv_cache_dtype,
                     use_mla=use_mla,
