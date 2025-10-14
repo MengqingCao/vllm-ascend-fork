@@ -827,7 +827,7 @@ class TorchairDeepseekV2SFAAttention(DeepseekV2MLAAttention):
             o_proj=self.o_proj,
             rotary_emb=self.rotary_emb,
             indexer=self.indexer,
-            is_sparse=hasattr(config, "index_topk")
+            is_sparse=hasattr(config, "index_topk"))
 
         self.sfa_attn = AscendSparseFlashAttention(
             self.hidden_size,

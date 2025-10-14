@@ -116,7 +116,7 @@ class NPUWorker(WorkerBase):
             "MindIE Turbo is installed. vLLM inference will be accelerated with MindIE Turbo."
         )
         if self.cache_config.cache_dtype == "auto":
-            self.kv_cache_dtype = self.dtype
+            self.kv_cache_dtype = self.model_config.dtype
         elif isinstance(self.cache_config.cache_dtype, torch.dtype):
             self.kv_cache_dtype = self.cache_config.cache_dtype
         else:
