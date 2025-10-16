@@ -49,6 +49,7 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                RowParallelLinear,
                                                UnquantizedLinearMethod)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
+from vllm.model_executor.layers.mla import MultiHeadLatentAttentionWrapper
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.vocab_parallel_embedding import (
@@ -69,10 +70,8 @@ from vllm.sequence import IntermediateTensors
 
 from vllm_ascend import envs
 from vllm_ascend.ascend_config import get_ascend_config
-from vllm_ascend.models.layers.mla import (AscendMLAModules,
-                                           AscendMultiHeadLatentAttention)
-from vllm_ascend.models.layers.sfa import (AscendSFAModules,
-                                           AscendSparseFlashAttention, Indexer)
+from vllm_ascend.models.layers.mla import AscendMLAModules
+from vllm_ascend.models.layers.sfa import AscendSFAModules, Indexer
 from vllm_ascend.quantization.quant_config import AscendLinearMethod
 from vllm_ascend.torchair.ops.torchair_fused_moe import TorchairAscendFusedMoE
 from vllm_ascend.torchair.quantization.torchair_w8a8_dynamic import \
@@ -572,25 +571,7 @@ class TorchairDeepseekV2MLAAttention(DeepseekV2MLAAttention):
             is_sparse=hasattr(config, "index_topk"),
         )
 
-        # self.mla_attn = Attention(
-        #     num_heads=self.num_local_heads,
-        #     head_size=self.kv_lora_rank + self.qk_rope_head_dim,
-        #     scale=self.scaling,
-        #     num_kv_heads=1,
-        #     cache_config=cache_config,
-        #     quant_config=quant_config,
-        #     prefix=f"{prefix}.attn",
-        #     use_mla=True,
-        #     # MLA Args
-        #     q_lora_rank=self.q_lora_rank,
-        #     kv_lora_rank=self.kv_lora_rank,
-        #     qk_nope_head_dim=self.qk_nope_head_dim,
-        #     qk_rope_head_dim=self.qk_rope_head_dim,
-        #     qk_head_dim=self.qk_head_dim,
-        #     v_head_dim=self.v_head_dim,
-        #     rotary_emb=self.rotary_emb,
-
-        self.mla_attn = AscendMultiHeadLatentAttention(
+        self.mla_attn = MultiHeadLatentAttentionWrapper(
             self.kv_lora_rank + self.qk_rope_head_dim,
             self.num_local_heads,
             self.enable_shared_expert_dp,
@@ -639,11 +620,9 @@ class TorchairDeepseekV2MLAAttention(DeepseekV2MLAAttention):
                                  dtype=hidden_states_or_q_c.dtype,
                                  device=hidden_states_or_q_c.device)
             forward_kwargs['output'] = output
-            output = self.mla_attn.impl.forward(self.mla_attn,
-                                                hidden_states_or_q_c,
-                                                hidden_states, None, kv_cache,
-                                                attn_metadata,
-                                                **forward_kwargs)
+            output = self.mla_attn.mla_attn.impl.forward(
+                self.mla_attn, hidden_states_or_q_c, hidden_states, None,
+                kv_cache, attn_metadata, **forward_kwargs)
             output = output.view(-1, output_shape[-1])
             return output
         else:
@@ -829,7 +808,7 @@ class TorchairDeepseekV2SFAAttention(DeepseekV2MLAAttention):
             indexer=self.indexer,
             is_sparse=hasattr(config, "index_topk"))
 
-        self.sfa_attn = AscendSparseFlashAttention(
+        self.sfa_attn = MultiHeadLatentAttentionWrapper(
             self.hidden_size,
             self.enable_shared_expert_dp,
             self.debug_layer_idx,
@@ -886,8 +865,9 @@ class TorchairDeepseekV2SFAAttention(DeepseekV2MLAAttention):
         output = torch.empty(output_shape,
                              dtype=hidden_states.dtype,
                              device=hidden_states.device)
-        self.sfa_attn.impl.forward(hidden_states, kv_cache, attn_metadata,
-                                   need_gather_q_kv, output)
+        self.sfa_attn.sfa_attn.impl.forward(hidden_states, kv_cache,
+                                            attn_metadata, need_gather_q_kv,
+                                            output)
         output = output.view(-1, output_shape[-1])
         return output
 
