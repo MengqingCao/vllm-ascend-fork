@@ -2862,7 +2862,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                                 and "linear_attn" not in layer_name_inner):
                             kv_cache_raw_tensors[layer_name_inner] = (k_tensor, v_tensor) if \
                                 not self.use_sparse else (k_tensor, v_tensor, k_cache_tensor)
-                    break
+                            break
 
         layer_names = set()
         for group in kv_cache_config.kv_cache_groups:
