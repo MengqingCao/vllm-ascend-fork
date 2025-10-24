@@ -2775,7 +2775,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             for idx in range(len(kv_cache_tensor.shared_by)):
                 layer_name = kv_cache_tensor.shared_by[idx]
                 print(30*"-", f"layer_name: {layer_name}")
-                if "linear_attn" in layer_name:
+                if "linear_attn" in layer_name and layer_name not in kv_cache_raw_tensors.keys():
+                    print(30*"|", f"layer_name: {layer_name}")
                     # for mamba linear attention
                     if self.vllm_config.kv_transfer_config is None:
                         tensor = torch.zeros(kv_cache_tensor.size,
@@ -2789,6 +2790,10 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                         tensor = self._align_memory(
                             tensor, alignment)[:kv_cache_tensor.size]
                     kv_cache_raw_tensors[layer_name] = tensor
+                    for layer_name_inner in kv_cache_tensor.shared_by:
+                        # shared the kvcache between the self_attn specs in the same group
+                        if "linear_attn" in layer_name_inner:
+                            kv_cache_raw_tensors[layer_name_inner] = tensor
                 elif "attn" in layer_name and layer_name not in kv_cache_raw_tensors.keys():
                     print(30*"/", f"layer_name: {layer_name}")
                     # NOTE: We need to init k cache tensor (nope cache tensor in mla) and
@@ -3001,10 +3006,6 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                     kv_caches[layer_name] = state_tensors
                 else:
                     raise ValueError("Unknown KV cache spec type.")
-
-        bind_kv_cache(kv_caches,
-                      self.compilation_config.static_forward_context,
-                      self.kv_caches)
 
         return kv_caches
 
