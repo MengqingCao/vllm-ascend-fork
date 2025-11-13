@@ -40,7 +40,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from tqdm import tqdm  # type: ignore
 from vllm.attention import AttentionType, get_attn_backend
-from vllm.attention.backends.abstract import AttentionBackend
+from vllm.attention.backends.abstract import AttentionBackend, MultipleOf
 from vllm.attention.layer import Attention
 from vllm.compilation.counter import compilation_counter
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
@@ -100,6 +100,7 @@ from vllm.v1.worker.kv_connector_model_runner_mixin import KVConnectorOutput
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 from vllm.v1.worker.utils import (AttentionGroup, bind_kv_cache,
                                   gather_mm_placeholders,
+                                  add_kv_sharing_layers_to_kv_cache_groups,
                                   sanity_check_mm_encoder_outputs,
                                   scatter_mm_placeholders)
 
@@ -328,6 +329,14 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         self.requests: Dict[str, CachedRequestState] = {}
         self.intermediate_tensors: Optional[IntermediateTensors] = None
         self.runner_only_attn_layers: set[str] = set()
+
+        # ----------------------- cross-layer KV sharing -----------------------
+        # Layer pairings for cross-layer KV sharing.
+        # If an Attention layer `layer_name` is in the keys of this dict, it
+        # means this layer will perform attention using the keys and values
+        # from the KV cache of `shared_kv_cache_layers[layer_name]`.
+        self.shared_kv_cache_layers: dict[str, str] = {}
+        # ----------------------------------------------------------------------
 
         self.ascend_config = get_ascend_config()
         if self.ascend_config.ascend_scheduler_config.enabled:
@@ -568,7 +577,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                 self.is_pooling_model,
                 self.vllm_config.model_config.logits_processors),
             is_pooling_model=self.is_pooling_model,
-            kernel_block_sizes=[[self.vllm_config.cache_config.block_size]],
+            kernel_block_sizes=[self.cache_config.block_size],
             cp_kv_cache_interleave_size=self.parallel_config.
             cp_kv_cache_interleave_size
             if prefill_context_parallel_enable() else 1,
@@ -1788,9 +1797,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                 )
             else:
                 blk_table = self.input_batch.block_table[kv_cache_group_id]
-                blk_table_tensor = blk_table.get_device_tensor()
-                slot_mapping = blk_table.slot_mapping[:slot_mapping_size]
-                blk_table.slot_mapping[slot_mapping_size:].fill_(0)
+                blk_table_tensor = blk_table.get_device_tensor(num_reqs)
+                slot_mapping = blk_table.slot_mapping.gpu[:slot_mapping_size]
+                blk_table.slot_mapping.gpu[slot_mapping_size:].fill_(-1)
                 if self.pcp_size > 1:
                     slot_mapping_for_pcp = blk_table.slot_mapping[:
                                                                   long_seq_metadata
@@ -1811,6 +1820,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                                          num_actual_tokens_pcp_padded] = pcp_padded_slot_mapping
                     slot_mapping = slot_mapping_for_pcp
 
+
+            print(30*"-", f"slot_mapping: {slot_mapping}")
             # Make AscendCommonAttentionMetadata
             common_attn_metadata = AscendCommonAttentionMetadata(
                 query_start_loc=self.query_start_loc[:num_reqs + 1],
@@ -1822,7 +1833,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                 num_input_tokens=num_input_tokens,
                 actual_seq_lengths_q=self.actual_seq_lengths_q,
                 # TODO: change this to the right block table for linear attn
-                block_table_tensor=blk_table_tensor[:num_reqs],
+                block_table_tensor=blk_table_tensor,
                 slot_mapping=slot_mapping,
                 num_computed_tokens_cpu=num_computed_tokens_cpu,
                 positions=self.positions,
@@ -3170,6 +3181,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         kv_cache_config = deepcopy(kv_cache_config)
         self.kv_cache_config = kv_cache_config
         self.may_add_encoder_only_layers_to_kv_cache_config()
+        self.maybe_add_kv_sharing_layers_to_kv_cache_groups(kv_cache_config)
         # NOTE(cmq): initialize_attn_backend must before using self.attn_groups
         self.initialize_attn_backend(kv_cache_config)
         self.use_hybrid_blocks = (len(self.attn_groups) > 1)
@@ -3209,10 +3221,32 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         kv_caches = self._reshape_kv_cache_tensors(kv_cache_config,
                                                    kv_cache_raw_tensors)
 
+        # Set up cross-layer KV cache sharing
+        for layer_name, target_layer_name in self.shared_kv_cache_layers.items():
+            logger.debug("%s reuses KV cache of %s", layer_name, target_layer_name)
+            kv_caches[layer_name] = kv_caches[target_layer_name]
+
         bind_kv_cache(kv_caches,
                       self.compilation_config.static_forward_context,
                       self.kv_caches)
         return kv_caches
+
+    def maybe_add_kv_sharing_layers_to_kv_cache_groups(
+        self, kv_cache_config: KVCacheConfig
+    ) -> None:
+        """
+        Add layers that reuse KV cache to KV cache group of its target layer.
+        Mapping of KV cache tensors happens in `initialize_kv_cache_tensors()`
+        """
+        if not self.shared_kv_cache_layers:
+            # No cross-layer KV sharing, return
+            return
+
+        add_kv_sharing_layers_to_kv_cache_groups(
+            self.shared_kv_cache_layers,
+            kv_cache_config.kv_cache_groups,
+            self.runner_only_attn_layers,
+        )
 
     def _allocate_kv_cache_tensors(
             self, kv_cache_config: KVCacheConfig) -> dict[str, torch.Tensor]:
@@ -3409,13 +3443,27 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                             kv_cache_spec.head_size)
                     elif hasattr(attn_backend, "get_supported_block_size"
                                  ) and self.use_hybrid_blocks:
-                        block_size = attn_backend.get_supported_block_size()[0]
+                        # block_size = attn_backend.get_supported_block_size()[0]
 
-                        block_size_chunk = kv_cache_spec.block_size // block_size
+                        # block_size_chunk = kv_cache_spec.block_size // block_size
+                        # kv_cache_shape = attn_backend.get_kv_cache_shape(
+                        #     num_blocks * block_size_chunk, block_size,
+                        #     kv_cache_spec.num_kv_heads,
+                        #     kv_cache_spec.head_size)
+                        kv_manager_block_size = kv_cache_spec.block_size
+                        kernel_size_list = self._find_compatible_block_sizes(
+                            kv_manager_block_size, attn_backend, return_all=False
+                        )
+                        kernel_size = kernel_size_list[0]
+                        num_blocks_per_kv_block = kv_manager_block_size // kernel_size
+                        kernel_num_blocks = num_blocks * num_blocks_per_kv_block
                         kv_cache_shape = attn_backend.get_kv_cache_shape(
-                            num_blocks * block_size_chunk, block_size,
+                            kernel_num_blocks,
+                            kernel_size,
                             kv_cache_spec.num_kv_heads,
-                            kv_cache_spec.head_size)
+                            kv_cache_spec.head_size,
+                            # cache_dtype_str=self.cache_config.cache_dtype,
+                        )
                     else:
                         kv_cache_shape = self.attn_backend.get_kv_cache_shape(
                             num_blocks, kv_cache_spec.block_size,
@@ -3493,6 +3541,87 @@ class NPUModelRunner(LoRAModelRunnerMixin):
 
         return kv_caches
 
+    def _find_compatible_block_sizes(
+        self,
+        kv_manager_block_size: int,
+        backend_cls: type[AttentionBackend],
+        return_all: bool = False,
+    ) -> list[int]:
+        """
+        Find compatible block sizes for a backend.
+
+        Args:
+            kv_manager_block_size: Physical block size of KV cache
+            backend_cls: Attention backend class
+            return_all: Return all compatible sizes if True, max size if False
+
+        Returns:
+            Compatible block size(s) based on return_all parameter
+
+        Raises:
+            ValueError: If no compatible block size found
+        """
+        supported_block_size = backend_cls.get_supported_kernel_block_size()
+        compatible_sizes = []
+
+        for block_size in supported_block_size:
+            if isinstance(block_size, int):
+                if kv_manager_block_size % block_size == 0:
+                    compatible_sizes.append(block_size)
+            elif (
+                isinstance(block_size, MultipleOf)
+                and kv_manager_block_size % block_size.base == 0
+            ):
+                compatible_sizes.append(kv_manager_block_size)
+
+        if not compatible_sizes:
+            raise ValueError(f"No compatible block size for {kv_manager_block_size}")
+
+        return compatible_sizes if return_all else [max(compatible_sizes)]
+
+    def _select_common_block_size(
+        self, kv_manager_block_size: int, attn_groups: list[AttentionGroup]
+    ) -> int:
+        """
+        Select common block size for all backends.
+
+        Args:
+            kv_manager_block_size: Block size of KV cache
+            attn_groups: List of attention groups
+
+        Returns:
+            Block size supported by all backends,
+            prioritizing cache_config.block_size
+
+        Raises:
+            ValueError: If no common block size found
+        """
+        all_backend_supports = []
+
+        for attn_group in attn_groups:
+            compatible_sizes = self._find_compatible_block_sizes(
+                kv_manager_block_size, attn_group.backend, return_all=True
+            )
+            supported_sizes = sorted(list(set(compatible_sizes)), reverse=True)
+            all_backend_supports.append(set(supported_sizes))
+
+        common_supported_sizes = set.intersection(*all_backend_supports)
+
+        if not common_supported_sizes:
+            error_msg = f"No common block size for {kv_manager_block_size}. "
+            for i, attn_group in enumerate(attn_groups):
+                supported = all_backend_supports[i]
+                error_msg += (
+                    f"Backend {attn_group.backend} supports: {sorted(supported)}. "
+                )
+            raise ValueError(error_msg)
+
+        if self.cache_config.block_size in common_supported_sizes:
+            return self.cache_config.block_size
+
+        return max(common_supported_sizes)
+
+
     def may_reinitialize_input_batch(self,
                                      kv_cache_config: KVCacheConfig) -> None:
         """
@@ -3511,48 +3640,13 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         ]
 
         # Generate kernel_block_sizes that matches each block_size
-        # For attention backends that support virtual block splitting,
-        # use the supported block sizes from the backend
-        # For other backends (like Mamba), use [0] (no splitting)
-        kernel_block_sizes = []
-        for kv_cache_group_id, kv_cache_group in enumerate(
-                kv_cache_config.kv_cache_groups):
-
-            if isinstance(kv_cache_group.kv_cache_spec,
-                          EncoderOnlyAttentionSpec):
-                continue
-            elif isinstance(kv_cache_group.kv_cache_spec, AttentionSpec):
-                # This is an attention backend that supports virtual
-                # block splitting. Get the supported block sizes from
-                # the backend.
-                try:
-                    attn_groups = self.attn_groups[kv_cache_group_id]
-                except IndexError:
-                    attn_groups = None
-                if attn_groups and self.use_hybrid_blocks:
-                    # Use the backend's supported block size list
-                    backend = attn_groups[0].backend
-                    supported_sizes = backend.get_supported_block_size()
-                    # If no specific sizes supported, use cache config
-                    # block_size
-                    kernel_block_size_list = (supported_sizes
-                                              if supported_sizes else
-                                              [self.cache_config.block_size])
-                else:
-                    # Fallback to cache config block_size if no backend found
-                    kernel_block_size_list = [self.cache_config.block_size]
-                kernel_block_sizes.append(kernel_block_size_list)
-            else:
-                # This is likely Mamba or other non-attention cache,
-                # no splitting.
-                # NOTE: set kernel_block_sizes to 0 to disable slotmapping computation
-                # of mamba block. In this case, BlockTable.block_size will never equal
-                # to kernel_block_sizes[0]
-                kernel_block_sizes.append([0])
+        kernel_block_sizes = self._prepare_kernel_block_sizes(kv_cache_config)
 
         if block_sizes != [
                 self.cache_config.block_size
-        ] or kernel_block_sizes != [[self.cache_config.block_size]]:
+        ] or kernel_block_sizes != [
+            self.cache_config.block_size
+        ]:
             assert self.cache_config.cpu_offload_gb == 0, (
                 "Cannot re-initialize the input batch when CPU weight "
                 "offloading is enabled. See https://github.com/vllm-project/vllm/pull/18298 "  # noqa: E501
@@ -3674,6 +3768,46 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             return
         for attn_groups in self.attn_groups:
             yield from attn_groups
+
+    def _prepare_kernel_block_sizes(self, kv_cache_config: KVCacheConfig) -> list[int]:
+        """
+        Generate kernel_block_sizes that matches each block_size.
+
+        For attention backends that support virtual block splitting,
+        use the supported block sizes from the backend.
+        For other backends (like Mamba), use the same block size (no splitting).
+
+        Args:
+            kv_cache_config: The KV cache configuration.
+
+        Returns:
+            list[int]: List of kernel block sizes for each cache group.
+        """
+        kernel_block_sizes = []
+        for kv_cache_group_id, kv_cache_group in enumerate(
+            kv_cache_config.kv_cache_groups
+        ):
+            if isinstance(kv_cache_group.kv_cache_spec, EncoderOnlyAttentionSpec):
+                continue
+            elif isinstance(kv_cache_group.kv_cache_spec, AttentionSpec):
+                # This is an attention backend that supports virtual
+                # block splitting. Get the supported block sizes from
+                # all backends in the group.
+                attn_groups = self.attn_groups[kv_cache_group_id]
+                kv_manager_block_size = kv_cache_group.kv_cache_spec.block_size
+                selected_kernel_size = self._select_common_block_size(
+                    kv_manager_block_size, attn_groups
+                )
+                kernel_block_sizes.append(selected_kernel_size)
+            elif isinstance(kv_cache_group.kv_cache_spec, MambaSpec):
+                # This is likely Mamba or other non-attention cache,
+                # no splitting.
+                kernel_block_sizes.append(kv_cache_group.kv_cache_spec.block_size)
+            else:
+                raise NotImplementedError(
+                    f"unknown kv cache spec {kv_cache_group.kv_cache_spec}"
+                )
+        return kernel_block_sizes
 
     def calculate_reorder_batch_threshold(self) -> None:
         """

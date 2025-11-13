@@ -40,7 +40,9 @@ from vllm.v1.spec_decode.utils import is_spec_decode_unsupported
 from vllm.v1.utils import copy_slice
 
 from vllm_ascend.utils import vllm_version_is
-from vllm_ascend.worker.block_table import MultiGroupBlockTable
+from vllm.v1.worker.block_table import MultiGroupBlockTable
+# from vllm_ascend.worker.block_table import MultiGroupBlockTable
+
 
 if vllm_version_is("0.11.0"):
     from vllm.utils import swap_dict_values
@@ -120,7 +122,7 @@ class InputBatch:
         is_spec_decode: bool = False,
         is_pooling_model: bool = False,
         num_speculative_tokens: int = 0,
-        kernel_block_sizes: Optional[list[list[int]]] = None,
+        kernel_block_sizes: Optional[list[int]] = None,
         cp_kv_cache_interleave_size: int = 1,
     ):
         self.is_pooling_model = is_pooling_model
@@ -175,8 +177,8 @@ class InputBatch:
             device=device,
             block_sizes=block_sizes,
             num_speculative_tokens=num_speculative_tokens,
-            kernel_sizes=kernel_block_sizes,
-            cp_kv_cache_interleave_size=cp_kv_cache_interleave_size,
+            kernel_block_sizes=kernel_block_sizes,
+            # cp_kv_cache_interleave_size=cp_kv_cache_interleave_size,
         )
 
         # Sampling-related.

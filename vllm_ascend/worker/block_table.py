@@ -20,7 +20,7 @@ class BlockTable:
                  max_num_batched_tokens: int,
                  pin_memory: bool,
                  device: torch.device,
-                 kernel_sizes: Union[list[int], None] = None,
+                 kernel_block_sizes: Union[list[int], None] = None,
                  cp_kv_cache_interleave_size: int = 1):
         self.max_num_reqs = max_num_reqs
         self.max_num_blocks_per_req = max_num_blocks_per_req
@@ -28,8 +28,8 @@ class BlockTable:
         self.pin_memory = pin_memory
         self.device = device
         self.physical_block_size = block_size
-        # If kernel_sizes is None or [0], use physical block size (no splitting)
-        if kernel_sizes is None or kernel_sizes == [0]:
+        # If kernel_block_sizes is None or [0], use physical block size (no splitting)
+        if kernel_block_sizes is None or kernel_block_sizes == [0]:
             self.block_size = block_size
             self.logical_block_size = block_size
             self.blocks_per_phys_block = 1
@@ -37,15 +37,16 @@ class BlockTable:
         else:
             # Find the first kernel size that divides physical_block_size evenly
             selected_kernel_size = None
-            for kernel_size in kernel_sizes:
-                if kernel_size > 0 \
-                    and self.physical_block_size % kernel_size == 0:
-                    selected_kernel_size = kernel_size
-                    break
+            selected_kernel_size = kernel_block_sizes
+            # for kernel_size in kernel_block_sizes:
+            #     if kernel_size > 0 \
+            #         and self.physical_block_size % kernel_size == 0:
+            #         selected_kernel_size = kernel_size
+            #         break
 
             if selected_kernel_size is None:
                 raise ValueError(
-                    f"None of the kernel sizes {kernel_sizes} can divide "
+                    f"None of the kernel sizes {kernel_block_sizes} can divide "
                     f"physical block size {self.physical_block_size} evenly")
 
             self.block_size = selected_kernel_size
@@ -98,7 +99,7 @@ class BlockTable:
             self.dcp_rank = 0
             self.pcp_world_size = 1
             self.pcp_rank = 0
-        self.kernel_sizes = kernel_sizes
+        self.kernel_block_sizes = kernel_block_sizes
         self.cp_kv_cache_interleave_size = cp_kv_cache_interleave_size
 
     def append_row(
@@ -184,8 +185,8 @@ class BlockTable:
             self.slot_mapping_np[:req_indices.shape[0]] = np.where(
                 mask, slot_mapping, -1)
         else:
-            assert self.kernel_sizes is not None
-            if self.block_size == self.kernel_sizes[0]:
+            assert self.kernel_block_sizes is not None
+            if self.block_size == self.kernel_block_sizes:
                 # IMPORTANT: In hybrid mode, positions are in logical block space,
                 # but we need to map them to the correct logical block table indices
                 logical_block_idx = positions // self.block_size
@@ -260,7 +261,7 @@ class MultiGroupBlockTable:
                  device: torch.device,
                  block_sizes: list[int],
                  num_speculative_tokens: int = 0,
-                 kernel_sizes: Optional[list[list[int]]] = None,
+                 kernel_block_sizes: Optional[list[list[int]]] = None,
                  cp_kv_cache_interleave_size: int = 1) -> None:
         # Note(hc): each dcp rank only store
         # (max_model_len//dcp_world_size) tokens in kvcache,
@@ -275,17 +276,18 @@ class MultiGroupBlockTable:
             dcp_world_size = 1
             cp_world_size = 1
 
-        if kernel_sizes is None:
-            kernel_sizes = [[0]] * len(block_sizes)
-        # Ensure kernel_sizes matches block_sizes length
-        elif len(kernel_sizes) == 1 and len(block_sizes) > 1:
-            kernel_sizes = kernel_sizes * len(block_sizes)
-        elif len(kernel_sizes) != len(block_sizes):
+        if kernel_block_sizes is None:
+            kernel_block_sizes = [0] * len(block_sizes)
+        # Ensure kernel_block_sizes matches block_sizes length
+        elif len(kernel_block_sizes) == 1 and len(block_sizes) > 1:
+            kernel_block_sizes = kernel_block_sizes * len(block_sizes)
+            print(30*"%", f"kernel_block_sizes: {kernel_block_sizes}")
+        elif len(kernel_block_sizes) != len(block_sizes):
             raise ValueError(
-                f"kernel_sizes length ({len(kernel_sizes)}) must match "
+                f"kernel_block_sizes length ({len(kernel_block_sizes)}) must match "
                 f"block_sizes length ({len(block_sizes)})")
 
-        # Use zip to pair block_sizes with kernel_sizes one-to-one
+        # Use zip to pair block_sizes with kernel_block_sizes one-to-one
         self.block_tables = [
             BlockTable(
                 block_size, max_num_reqs,
@@ -295,7 +297,7 @@ class MultiGroupBlockTable:
                     1 + num_speculative_tokens), max_num_batched_tokens,
                 pin_memory, device, kernel_size_list,
                 cp_kv_cache_interleave_size)
-            for block_size, kernel_size_list in zip(block_sizes, kernel_sizes)
+            for block_size, kernel_size_list in zip(block_sizes, kernel_block_sizes)
         ]
 
     def append_row(self, block_ids: tuple[list[int], ...],
