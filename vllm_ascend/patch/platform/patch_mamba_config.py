@@ -64,8 +64,10 @@ def verify_and_update_config(cls, vllm_config) -> None:
     # block size to multiple of 16, so let's suggest a value
     # that would work (note: FA is currently not compatible
     # with mamba layers, use FlashInfer instead).
+    print(30*"=", f"block_alignment_bytes: {block_alignment_bytes}, attn_page_size_1_token: {attn_page_size_1_token}, mamba_page_size: {mamba_page_size}")
     attn_block_size = block_alignment_bytes * cdiv(
         mamba_page_size, block_alignment_bytes * attn_page_size_1_token)
+    print(30*"=", f"attn_block_size: {attn_block_size}, cache_config.block_size: {cache_config.block_size}, model_config.max_model_len: {model_config.max_model_len}")
 
     # override attention block size if either (a) the
     # user has not set it or (b) the user has set it
@@ -81,6 +83,7 @@ def verify_and_update_config(cls, vllm_config) -> None:
     # compute new attention page size
     attn_page_size = \
         cache_config.block_size * attn_page_size_1_token
+    print(30*"=", f"cache_config.block_size: {cache_config.block_size}")
 
     assert attn_page_size >= mamba_page_size
 
