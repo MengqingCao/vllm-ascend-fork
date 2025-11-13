@@ -1147,14 +1147,14 @@ class AscendAttentionBackendImpl(AttentionImpl):
                     key, value = all_kv.split([self.head_size, self.head_size],
                                               dim=-1)
 
-                # print(30*"/")
-                # print(f"key: {key[self.pcp_size * num_decode_tokens:attn_metadata.num_actual_tokens_pcp_padded]}")
-                # print(f"value: {value[self.pcp_size * num_decode_tokens:attn_metadata.num_actual_tokens_pcp_padded]}")
-                # print(f"self.key_cache: {self.key_cache}")
-                # print(f"self.value_cache: {self.value_cache}")
-                # print(f"slot_indices: {attn_metadata.slot_mapping}")
-                # print(f"slot_indices: {attn_metadata.slot_mapping[self.pcp_size * num_decode_tokens:attn_metadata.num_actual_tokens_pcp_padded]}")
-                # print(30*"/")
+                print(30*"/")
+                print(f"key: {key[self.pcp_size * num_decode_tokens:attn_metadata.num_actual_tokens_pcp_padded].shape}, {key[self.pcp_size * num_decode_tokens:attn_metadata.num_actual_tokens_pcp_padded]}")
+                print(f"value: {value[self.pcp_size * num_decode_tokens:attn_metadata.num_actual_tokens_pcp_padded].shape}, {value[self.pcp_size * num_decode_tokens:attn_metadata.num_actual_tokens_pcp_padded]}")
+                print(f"self.key_cache: {self.key_cache.shape}, {self.key_cache}")
+                print(f"self.value_cache: {self.value_cache.shape}, {self.value_cache}")
+                print(f"slot_indices: {attn_metadata.slot_mapping}")
+                print(f"slot_indices: {attn_metadata.slot_mapping[self.pcp_size * num_decode_tokens:attn_metadata.num_actual_tokens_pcp_padded]}")
+                print(30*"/")
 
                 torch_npu._npu_reshape_and_cache(
                     key=key[self.pcp_size * num_decode_tokens:attn_metadata.
