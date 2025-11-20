@@ -226,6 +226,9 @@ class AscendMetadata:
 
     decode_meta: Optional[AscendMetadataForDecode] = None
 
+    # Used to guide the attention computation for pooling models.
+    is_causal_pooling: Optional[bool] = None
+
 
 class AscendAttentionMetadataBuilder:
     # Does this backend/builder support ACL Graphs for attention (default: no).
@@ -451,6 +454,11 @@ class AscendAttentionMetadataBuilder:
                                                            shape[0]],
                     block_tables=block_table[:num_decodes])
 
+        is_causal_pooling = None
+        if self.model_config.runner_type == "pooling":
+            is_causal_pooling = common_attn_metadata.causal if hasattr(
+                common_attn_metadata, 'causal') else True
+
         attn_metadata = AscendMetadata(
             num_actual_tokens=num_actual_tokens,
             num_decode_tokens=num_decode_tokens,
@@ -469,7 +477,8 @@ class AscendAttentionMetadataBuilder:
             num_prefills=num_prefills,
             num_decodes=num_decodes,
             prefill=prefill_metadata,
-            decode_meta=decode_metadata)
+            decode_meta=decode_metadata,
+            is_causal_pooling=is_causal_pooling)
         return attn_metadata
 
     def _get_chunked_req_mask(self, local_context_lens_allranks) -> List[bool]:
@@ -1132,6 +1141,34 @@ class AscendAttentionBackendImpl(AttentionImpl):
             output[num_decode_tokens:attn_output_prefill.shape[0] +
                    num_decode_tokens] = attn_output_prefill
         return output
+
+    def _forward_pooling(self, query: torch.Tensor, key: torch.Tensor,
+                         value: torch.Tensor, attn_metadata: AscendMetadata,
+                         _: torch.Tensor) -> torch.Tensor:
+        assert attn_metadata is not None
+        assert attn_metadata.is_causal_pooling is not None
+        if attn_metadata.is_causal_pooling:
+            return torch_npu.npu_fusion_attention(
+                query=query,
+                key=key,
+                value=value,
+                head_num=self.num_heads,
+                atten_mask=attn_metadata.attn_mask,
+                input_layout="TND",
+                actual_seq_qlen=attn_metadata.actual_seq_lengths_q,
+                actual_seq_kvlen=attn_metadata.actual_seq_lengths_q,
+                scale=self.scale,
+                sparse_mode=3)[0]
+        else:
+            return torch_npu.npu_fusion_attention(
+                query=query,
+                key=key,
+                value=value,
+                head_num=self.num_heads,
+                input_layout="TND",
+                actual_seq_qlen=attn_metadata.actual_seq_lengths_q,
+                actual_seq_kvlen=attn_metadata.actual_seq_lengths_q,
+                scale=self.scale)[0]
 
     def _process_chunk_prefill(self, current_attn_output_prefill,
                                current_attn_lse_prefill, kv_cache,
