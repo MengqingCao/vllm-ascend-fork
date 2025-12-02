@@ -234,7 +234,8 @@ class AscendMetadata:
 
     decode_meta: Optional[AscendMetadataForDecode] = None
 
-    # Used to guide the attention computation for pooling models.
+    # Whether is the pooling model with causal attention,
+    # used to guide the attention computation for pooling models.
     is_causal_pooling: Optional[bool] = None
 
 
@@ -1269,33 +1270,39 @@ class AscendAttentionBackendImpl(AttentionImpl):
                    num_decode_tokens] = attn_output_prefill
         return output
 
-    def _forward_pooling(self, query: torch.Tensor, key: torch.Tensor,
-                         value: torch.Tensor, attn_metadata: AscendMetadata,
-                         _: torch.Tensor) -> torch.Tensor:
+    def _forward_encoder_attention(self, query: torch.Tensor,
+                                   key: torch.Tensor, value: torch.Tensor,
+                                   attn_metadata: AscendMetadata,
+                                   _: torch.Tensor) -> torch.Tensor:
         assert attn_metadata is not None
         assert attn_metadata.is_causal_pooling is not None
+
         if attn_metadata.is_causal_pooling:
+            # use sparse_mode 3 in causal scenario
             return torch_npu.npu_fusion_attention(
                 query=query,
                 key=key,
                 value=value,
                 head_num=self.num_heads,
-                atten_mask=attn_metadata.attn_mask,
                 input_layout="TND",
-                actual_seq_qlen=attn_metadata.actual_seq_lengths_q,
-                actual_seq_kvlen=attn_metadata.actual_seq_lengths_q,
                 scale=self.scale,
-                sparse_mode=3)[0]
+                sparse_mode=3,
+                atten_mask=attn_metadata.attn_mask,
+                actual_seq_qlen=attn_metadata.actual_seq_lengths_q,
+                actual_seq_kvlen=attn_metadata.actual_seq_lengths_q,
+            )[0]
         else:
+            # use default sparse_mode 0 in normal scenario, which means no mask works on it
             return torch_npu.npu_fusion_attention(
                 query=query,
                 key=key,
                 value=value,
                 head_num=self.num_heads,
                 input_layout="TND",
+                scale=self.scale,
                 actual_seq_qlen=attn_metadata.actual_seq_lengths_q,
                 actual_seq_kvlen=attn_metadata.actual_seq_lengths_q,
-                scale=self.scale)[0]
+            )[0]
 
     def _process_chunk_prefill(self, current_attn_output_prefill,
                                current_attn_lse_prefill, kv_cache,
@@ -1596,13 +1603,13 @@ class AscendAttentionBackendImpl(AttentionImpl):
 
         forward_context: ForwardContext = get_forward_context()
         if not forward_context.capturing:
-            if self.pcp_size * self.dcp_size > 1:
+            # pooling model branch
+            if isinstance(attn_metadata.is_causal_pooling, bool):
+                intermediate_output = self._forward_encoder_attention(
+                    query, key, value, attn_metadata, output)
+            elif self.pcp_size * self.dcp_size > 1:
                 intermediate_output = self._forward_pcp_dcp(
                     query, key, value, kv_cache, attn_metadata, output)
-            # pooling model branch
-            elif isinstance(attn_metadata.is_causal_pooling, bool):
-                intermediate_output = self._forward_pooling(
-                    query, key, value, attn_metadata, output)
             # V0-Style scheduler situation.
             elif attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
                 intermediate_output = self._forward_prefill_no_cache(
