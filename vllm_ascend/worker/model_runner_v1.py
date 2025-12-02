@@ -981,7 +981,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         # Pooling situation.
         if self.model_config.runner_type == "pooling":
             return self.attn_mask_builder.get_attn_mask(
-                2048, self.dtype, self.device)
+                2048, torch.bool, self.device)
         return self.attn_mask_builder.get_splitfuse_attn_mask()
 
     def _calc_mrope_positions(self, scheduler_output: "SchedulerOutput"):
