@@ -25,11 +25,12 @@ Adapt Hugging Face or local models to run on `vllm-ascend` with minimal changes,
     - `/vllm-workspace/vllm-ascend`
 - Start `vllm serve` from `/workspace` with direct command by default.
 - Default API port is `8000` unless user explicitly asks otherwise.
-- Feature-first default: try best to validate ACLGraph / EP / flashcomm1 / MTP / multimodal out-of-box.
+- Feature-first default: try best to validate ACLGraph / EP / flashcomm1 / multimodal out-of-box. MTP is validated only when the checkpoint explicitly supports it (inferred from config + weight keys in Step 2).
 - `--enable-expert-parallel` and flashcomm1 checks are MoE-only; for non-MoE models mark as not-applicable with evidence.
 - If any feature cannot be enabled, keep evidence and explain reason in final report.
 - Do not rely on `PYTHONPATH=<modified-src>:$PYTHONPATH` unless debugging fallback is strictly needed.
 - Keep code changes minimal and focused on the target model.
+- **Never introduce modeling files or patches into `vllm-ascend`**. All model adaptation code belongs in `/vllm-workspace/vllm`. If a model cannot function on Ascend without adding modeling code to `vllm-ascend`, stop — raise a GitHub issue to analyze the root cause instead.
 - Final deliverable commit must be one single signed commit in the current working repo (`git commit -sm ...`).
 - Keep final docs in Chinese and compact.
 - **Dummy-first is encouraged for speed, but dummy is NOT fully equivalent to real weights.**
@@ -43,7 +44,7 @@ Adapt Hugging Face or local models to run on `vllm-ascend` with minimal changes,
 - Confirm implementation roots (`/vllm-workspace/vllm`, `/vllm-workspace/vllm-ascend`).
 - Confirm delivery root (the current git repo where the final commit is expected).
 - Confirm runtime import path points to `/vllm-workspace/*` install.
-- Use default expected feature set: ACLGraph + EP + flashcomm1 + MTP + multimodal (if model has VL capability).
+- Use default expected feature set: ACLGraph + EP + flashcomm1 + multimodal (if model has VL capability). MTP is validated only if the checkpoint explicitly supports it (determined in Step 2).
 - User requirements extend this baseline, not replace it.
 
 ### 2) Analyze model first
@@ -67,13 +68,16 @@ Adapt Hugging Face or local models to run on `vllm-ascend` with minimal changes,
     - which operator blocks Ascend support,
     - why no fallback exists,
     - recommended path forward (e.g., implement a custom Ascend op in `vllm-ascend`).
-- If a fallback exists for every CUDA operator, document the fallback path and continue.
+- **Triton operator early-exit gate**: If a Triton kernel is verified to be non-functional on Ascend (correctness failure or unacceptable accuracy degradation), **stop here** — file a GitHub issue that explains:
+    - which Triton kernel fails and the observed failure mode,
+    - recommended path forward (e.g., replace with a Torch-native fallback or implement a custom Ascend op).
+- If every CUDA operator has a fallback and every Triton kernel passes verification, document fallback paths and continue.
 
 ### 4) Analyze framework-side code
 
 - Identify vLLM framework modules changed to support the new model (e.g., scheduler, attention backend, sampler, weight loader, worker) — anything beyond the model file and operators.
 - For each changed module, check whether `vllm-ascend` already overrides or depends on it:
-    - If the module is a **common vLLM module already covered by vllm-ascend**, no adaptation is needed — vllm-ascend inherits the change automatically.
+    - If the module is a **common vLLM module already covered by vllm-ascend**, check whether the existing vllm-ascend patch still applies correctly after the upstream change. If the patch needs updating, update it; otherwise no further action is needed.
     - If the module is **not covered by vllm-ascend** and contains Ascend-incompatible logic, add a minimal corresponding override under `/vllm-workspace/vllm-ascend`.
 - Keep framework-side patches minimal and scoped to the incompatible code paths only.
 
@@ -87,10 +91,11 @@ Adapt Hugging Face or local models to run on `vllm-ascend` with minimal changes,
     - implement explicit weight loading/remap rules (including fp8 scale pairing, KV/QK norm sharding, rope variants).
 - If remote code needs newer transformers symbols, do not upgrade dependency.
 - If unavoidable, copy required modeling files from sibling transformers source and keep scope explicit.
-- If failure is backend-specific (kernel/op/platform), patch minimal required code in `/vllm-workspace/vllm-ascend`.
+- If failure is backend-specific (kernel/op/platform) and would require adding modeling code to `vllm-ascend`, do not proceed — raise a GitHub issue to analyze the root cause instead.
 
-### 6) Implement minimal code changes (in implementation roots)
+### 6) Implement minimal code changes (in vLLM source only)
 
+- Do not introduce modeling files or patches in `/vllm-workspace/vllm-ascend`.
 - Touch only files required for this model adaptation.
 - Keep weight mapping explicit and auditable.
 - Avoid unrelated refactors.
@@ -132,6 +137,8 @@ Adapt Hugging Face or local models to run on `vllm-ascend` with minimal changes,
 - Capacity baseline by default (single machine): `max-model-len=128k` + `max-num-seqs=16`.
 - Then expand concurrency (e.g., 32/64) if requested or feasible.
 
+> **Note**: Accuracy evaluation and performance benchmarking are out of scope for this skill. They are handled by a dedicated separate skill. If requested, invoke that skill after completing this step.
+
 ### 9) Backport, generate artifacts, and commit in delivery repo
 
 - If implementation happened in `/vllm-workspace/*`, backport minimal final diff to current working repo.
@@ -154,7 +161,7 @@ Adapt Hugging Face or local models to run on `vllm-ascend` with minimal changes,
 
 - Service starts successfully from `/workspace` with direct command.
 - OpenAI-compatible inference request succeeds (not startup-only).
-- Key feature set is attempted and reported: ACLGraph / EP / flashcomm1 / MTP / multimodal.
+- Key feature set is attempted and reported: ACLGraph / EP / flashcomm1 / multimodal. MTP reported if checkpoint supports it.
 - Capacity baseline (`128k + bs16`) result is reported, or explicit reason why not feasible.
 - **Dummy stage evidence is present (if used), and real-weight stage evidence is present (mandatory).**
 - Test config YAML exists at `tests/e2e/models/configs/<ModelName>.yaml` and follows the established schema (`model_name`, `hardware`, `tasks`, `num_fewshot`).

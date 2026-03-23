@@ -17,7 +17,7 @@ It handles both cases:
 | --- | --- |
 | A new model needs to run on Ascend NPU for the first time | Yes |
 | An existing vLLM-supported model fails on Ascend (op error, shape error, boot failure) | Yes |
-| A model runs on GPU but needs Ascend-specific feature validation (ACLGraph, EP, MTP) | Yes |
+| A model runs on GPU but needs Ascend-specific feature validation (ACLGraph, EP) | Yes |
 | You only want to upgrade a dependency or do unrelated refactoring | No |
 
 ---
@@ -77,7 +77,7 @@ The agent confirms all paths and the default feature set to validate:
 | Feature | Applies to |
 | --- | --- |
 | ACLGraph | All models |
-| MTP | All models (depends on checkpoint) |
+| MTP | Only if checkpoint explicitly supports it (determined in Step 2) |
 | EP (expert parallel) | MoE models only |
 | flashcomm1 | MoE models only |
 | Multimodal (VL) | Vision-language models only |
@@ -119,7 +119,9 @@ The agent scans all new operators in the model code and classifies them:
 | **CUDA** kernel with fallback | ❌ CUDA unsupported | Use fallback; document the path |
 | **CUDA** kernel, **no fallback** | ❌ Blocked | **Early exit — file GitHub issue immediately** |
 
-> **CUDA early-exit rule**: If any operator is a pure CUDA kernel with no Torch/Triton alternative, the agent stops here, skips all validation, and files a GitHub issue documenting the blocking operator, why no fallback exists, and the recommended path forward (e.g., implement a custom Ascend op in `vllm-ascend`).
+> **CUDA early-exit rule**: If any operator is a pure CUDA kernel with no Torch/Triton alternative, the agent stops, skips all validation, and files a GitHub issue documenting the blocking operator, why no fallback exists, and the recommended path forward.
+>
+> **Triton early-exit rule**: If a Triton kernel is verified to be non-functional on Ascend (correctness failure or unacceptable accuracy degradation), the agent stops and files a GitHub issue documenting which kernel fails, the observed failure mode, and the recommended path forward (e.g., replace with a Torch-native fallback or implement a custom Ascend op).
 
 ---
 
@@ -131,7 +133,8 @@ The agent identifies vLLM framework modules changed alongside the model (schedul
 Changed vLLM module
         │
         ├─ Already patched/overridden by vllm-ascend?
-        │       └─ YES → No action needed. vllm-ascend inherits automatically.
+        │       └─ YES → Check if the existing patch still applies correctly.
+        │                If it needs updating, update it; otherwise no action needed.
         │
         └─ NOT covered + contains Ascend-incompatible logic?
                 └─ YES → Add minimal override under /vllm-workspace/vllm-ascend/
@@ -148,7 +151,7 @@ Patches are kept minimal and scoped to the incompatible paths only.
 | Architecture exists in `registry.py` and is compatible | Reuse; patch only what's broken |
 | Architecture missing or incompatible | Implement new adapter in `vllm/model_executor/models/`, register in `registry.py` |
 | Remote code needs newer `transformers` symbols | Copy required files from source — **never upgrade `transformers`** |
-| Failure is backend-specific (kernel/op/platform) | Patch minimal code in `/vllm-workspace/vllm-ascend` only |
+| Failure requires model-specific code in `vllm-ascend` | **Do not proceed** — raise a GitHub issue to analyze the root cause |
 
 New adapter implementation checklist:
 
@@ -159,9 +162,9 @@ New adapter implementation checklist:
 
 ---
 
-### Step 6 — Implement minimal code changes
+### Step 6 — Implement minimal code changes (vLLM source only)
 
-The agent touches only files required for this model. Weight mapping is kept explicit and auditable. No unrelated refactors.
+All model adaptation code is implemented in `/vllm-workspace/vllm` only. Do not introduce model-specific files or patches in `/vllm-workspace/vllm-ascend` — if a model cannot function on Ascend without that, raise a GitHub issue instead. Weight mapping is kept explicit and auditable. No unrelated refactors.
 
 Syntax check after implementation:
 
@@ -231,6 +234,8 @@ Feature status is reported using four categories:
 
 Capacity baseline: `max-model-len=128k` + `max-num-seqs=16`. Expand to 32/64 seqs if requested.
 
+> **Note**: Accuracy evaluation and performance benchmarking are out of scope for this skill. They are handled by a dedicated separate skill. Invoke that skill after completing this step if needed.
+
 ---
 
 ### Step 9 — Backport, generate artifacts, commit
@@ -290,7 +295,7 @@ When startup or inference fails, the agent follows this ordered ladder:
 - [ ] Service starts from `/workspace` on port 8000
 - [ ] At least one text inference request returns HTTP 200 + non-empty output
 - [ ] VL models: at least one text+image request returns HTTP 200
-- [ ] ACLGraph / EP / flashcomm1 / MTP / multimodal all reported (with status)
+- [ ] ACLGraph / EP / flashcomm1 / multimodal all reported (with status); MTP reported if checkpoint supports it
 - [ ] `128k + bs16` capacity baseline reported (or explicit reason if not feasible)
 - [ ] **Real-weight Stage B evidence present** (dummy-only is never sufficient)
 - [ ] `tests/e2e/models/configs/<ModelName>.yaml` exists with correct schema
