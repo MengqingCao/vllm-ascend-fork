@@ -461,7 +461,7 @@ def _build_kv_cache(self, forward_context):
     state_cache = None
     indexer_state_cache = None
     indexer_k_cache = None
-    indexer_scale_cache = None
+    # indexer_scale_cache = None
 
     if self.compress_ratio > 1:
         state_cache = self.compressor.state_cache.kv_cache
@@ -471,11 +471,11 @@ def _build_kv_cache(self, forward_context):
             compress_kv_cache = compress_kv_cache[virtual_engine]
     if self.compress_ratio == 4:
         indexer_state_cache = self.indexer.compressor.state_cache.kv_cache
-        indexer_k_cache, indexer_scale_cache = (
-            self.indexer.k_cache.kv_cache[0][0],
-            self.indexer.k_cache.kv_cache[0][1],
-        )
-
+        # indexer_k_cache, indexer_scale_cache = (
+        #     self.indexer.k_cache.kv_cache[0][0],
+        #     self.indexer.k_cache.kv_cache[0][1],
+        # )
+        indexer_k_cache = self.indexer.k_cache.kv_cache[0][0]
     return tuple(
         [
             unfold_kvcache(cache)
@@ -485,7 +485,7 @@ def _build_kv_cache(self, forward_context):
                 state_cache,
                 indexer_state_cache,
                 indexer_k_cache,
-                indexer_scale_cache,
+                # indexer_scale_cache,
             )
         ]
     )

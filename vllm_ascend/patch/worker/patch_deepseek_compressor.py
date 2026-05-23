@@ -14,6 +14,11 @@ from vllm_ascend.attention.dsa_v1 import AscendDSABackend
 from vllm_ascend.patch.platform.patch_kv_cache_interface import AscendMLAAttentionSpec
 
 
+DEEPSEEK_V4_INDEXER_CACHE_DTYPE = torch.float32
+DEEPSEEK_V4_OVERLAP_STATE_PAGE_SIZE_PADDED = 65536
+DEEPSEEK_V4_DEFAULT_STATE_PAGE_SIZE_PADDED = 131072
+
+
 class AscendCompressorStateCache(CompressorStateCache):
     def __init__(
         self,
@@ -41,7 +46,11 @@ class AscendCompressorStateCache(CompressorStateCache):
         self.block_size = block_size
 
     def get_kv_cache_spec(self, vllm_config) -> KVCacheSpec:
-        page_size_padded = 16640 if self.state_dim == 2 * 256 and self.compress_ratio == 4 else 131072
+        page_size_padded = (
+            DEEPSEEK_V4_OVERLAP_STATE_PAGE_SIZE_PADDED
+            if self.state_dim == 2 * 256 and self.compress_ratio == 4
+            else DEEPSEEK_V4_DEFAULT_STATE_PAGE_SIZE_PADDED
+        )
         return SlidingWindowMLASpec(  # only has one vector instead of K + V
             block_size=self.block_size,
             num_kv_heads=1,
@@ -74,12 +83,10 @@ class AscendDeepseekV4IndexerCache(DeepseekV4IndexerCache):
             block_size=128,
             num_kv_heads=1,
             head_size=self.head_dim,
-            dtype=self.dtype,
+            dtype=DEEPSEEK_V4_INDEXER_CACHE_DTYPE,
             model_version="deepseek_v4",
             compress_ratio=self.compress_ratio,
             cache_dtype_str=self.cache_config.cache_dtype,
-            scale_dim=1 if self.head_dim == 128 else 0,
-            scale_dtype=torch.float16,
         )
 
     def forward(self): ...

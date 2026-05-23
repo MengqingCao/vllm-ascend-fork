@@ -2408,7 +2408,7 @@ class AscendDSAImpl(DSAAttentionImpl):
             _,
             indexer_state_cache,
             indexer_k_cache,
-            indexer_scale_cache,
+            # indexer_scale_cache,
         ) = kv_cache
         (
             _,
@@ -2487,7 +2487,7 @@ class AscendDSAImpl(DSAAttentionImpl):
             q,
             kv,
             indexer_k_cache,
-            indexer_scale_cache,
+            # indexer_scale_cache,
             indexer_kv_state_metadata,
             indexer_kv_scale_metadata,
             with_prefill,
@@ -2499,7 +2499,7 @@ class AscendDSAImpl(DSAAttentionImpl):
         kv: torch.Tensor | None,
         weights: torch.Tensor,
         indexer_k_cache: torch.Tensor,
-        indexer_scale_cache: torch.Tensor,
+        # indexer_scale_cache: torch.Tensor,
         indexer_kv_state_metadata,
         indexer_kv_scale_metadata,
         with_prefill: bool,
@@ -2508,7 +2508,7 @@ class AscendDSAImpl(DSAAttentionImpl):
             q,
             kv,
             indexer_k_cache,
-            indexer_scale_cache,
+            # indexer_scale_cache,
             indexer_kv_scale_metadata,
             with_prefill,
         )
@@ -2517,7 +2517,7 @@ class AscendDSAImpl(DSAAttentionImpl):
             weights,
             q_scale,
             indexer_k_cache,
-            indexer_scale_cache,
+            # indexer_scale_cache,
             indexer_kv_scale_metadata,
             with_prefill,
         )
@@ -2527,7 +2527,7 @@ class AscendDSAImpl(DSAAttentionImpl):
         q: torch.Tensor,
         kv: torch.Tensor | None,
         indexer_k_cache: torch.Tensor,
-        indexer_scale_cache: torch.Tensor,
+        # indexer_scale_cache: torch.Tensor,
         indexer_kv_scale_metadata,
         with_prefill: bool,
     ):
@@ -2553,18 +2553,18 @@ class AscendDSAImpl(DSAAttentionImpl):
                 torch.ops._C_ascend.npu_scatter_nd_update_v2(
                     indexer_k_cache, indexer_kv_scale_metadata.prefill.slot_mapping, kv
                 )
-                torch.ops._C_ascend.npu_scatter_nd_update_v2(
-                    indexer_scale_cache, indexer_kv_scale_metadata.prefill.slot_mapping, kv_scale
-                )
+                # torch.ops._C_ascend.npu_scatter_nd_update_v2(
+                #     indexer_scale_cache, indexer_kv_scale_metadata.prefill.slot_mapping, kv_scale
+                # )
         else:
             assert indexer_kv_scale_metadata.decode is not None
             if kv is not None:
                 torch.ops._C_ascend.npu_scatter_nd_update_v2(
                     indexer_k_cache, indexer_kv_scale_metadata.decode.slot_mapping, kv
                 )
-                torch.ops._C_ascend.npu_scatter_nd_update_v2(
-                    indexer_scale_cache, indexer_kv_scale_metadata.decode.slot_mapping, kv_scale
-                )
+                # torch.ops._C_ascend.npu_scatter_nd_update_v2(
+                #     indexer_scale_cache, indexer_kv_scale_metadata.decode.slot_mapping, kv_scale
+                # )
 
         return q, q_scale, kv, kv_scale
 
@@ -2574,7 +2574,7 @@ class AscendDSAImpl(DSAAttentionImpl):
         weights: torch.Tensor,
         q_scale: torch.Tensor,
         indexer_k_cache: torch.Tensor,
-        indexer_scale_cache: torch.Tensor,
+        # indexer_scale_cache: torch.Tensor,
         indexer_kv_scale_metadata,
         with_prefill: bool,
     ):
@@ -2596,7 +2596,7 @@ class AscendDSAImpl(DSAAttentionImpl):
             key=indexer_k_cache,
             weights=weights.to(torch.float16),
             query_dequant_scale=q_scale,
-            key_dequant_scale=indexer_scale_cache.squeeze(-2),
+            key_dequant_scale=indexer_scale_cache.squeeze(-2), # TODO(yilin): use li instead of qli
             actual_seq_lengths_query=qlens,
             actual_seq_lengths_key=kvlens,
             block_table=block_table,
@@ -2673,7 +2673,8 @@ class AscendDSAImpl(DSAAttentionImpl):
         - Part3: Main q_hadamard[C] ∥ Aux scatter_scale_cache[AIV]
         - Part4: Main serial weights + q_quant + indexer
         """
-        (_, _, _, indexer_state_cache, indexer_k_cache, indexer_scale_cache) = kv_cache
+        (_, _, _, indexer_state_cache, indexer_k_cache) = kv_cache
+        #  indexer_scale_cache
         # sorted keys: [attn, compressor.state_cache, indexer.compressor.state_cache, indexer.k_cache, swa_cache]
         (_, _, indexer_kv_state_metadata, indexer_kv_scale_metadata, _) = attn_metadata
 
@@ -2795,14 +2796,14 @@ class AscendDSAImpl(DSAAttentionImpl):
                 torch.npu.current_stream().wait_event(e_rope_done)
                 if soc_version not in {AscendDeviceType.A5}:
                     kv_scale = kv_scale.to(torch.float16).unsqueeze(-1)
-                if with_prefill:
-                    torch.ops._C_ascend.npu_scatter_nd_update_v2(
-                        indexer_scale_cache, indexer_scale_prefill_metadata.slot_mapping, kv_scale
-                    )
-                else:
-                    torch.ops._C_ascend.npu_scatter_nd_update_v2(
-                        indexer_scale_cache, indexer_scale_decode_metadata.slot_mapping, kv_scale
-                    )
+                # if with_prefill:
+                #     torch.ops._C_ascend.npu_scatter_nd_update_v2(
+                #         indexer_scale_cache, indexer_scale_prefill_metadata.slot_mapping, kv_scale
+                #     )
+                # else:
+                #     torch.ops._C_ascend.npu_scatter_nd_update_v2(
+                #         indexer_scale_cache, indexer_scale_decode_metadata.slot_mapping, kv_scale
+                #     )
 
         # Main: q_hadamard[Part1 - linear] (directly submit, C/AIV different engines dispatch naturally)
         # Part1: F.linear - parallel with aux_stream kv_scatter
@@ -2842,7 +2843,7 @@ class AscendDSAImpl(DSAAttentionImpl):
             key=indexer_k_cache,
             weights=weights.to(torch.float16),  # cast
             query_dequant_scale=q_scale,
-            key_dequant_scale=indexer_scale_cache.squeeze(-2),
+            key_dequant_scale=indexer_scale_cache.squeeze(-2), # TODO(yilin): use li instead of qli
             actual_seq_lengths_query=qlens,
             actual_seq_lengths_key=kvlens,
             block_table=block_table,
